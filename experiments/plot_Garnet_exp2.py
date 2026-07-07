@@ -29,6 +29,7 @@ GRID_ALPHA = 0.25
 SIM_COLOR = "C0"
 UNI_COLOR = "C1"
 
+
 def set_integer_yticks_keep_limits(ax):
     """
     Use integer y-axis ticks without changing the current y-axis limits.
@@ -46,6 +47,7 @@ def set_integer_yticks_keep_limits(ax):
 
     # Restore the original limits so that the plot range is unchanged.
     ax.set_ylim(ymin, ymax)
+
 
 def style_boxplot(boxplot_dict, color):
     """Apply a unified style to matplotlib boxplot objects."""
@@ -74,11 +76,11 @@ def style_boxplot(boxplot_dict, color):
 
 
 def main():
-    result_dir = PROJECT_ROOT / "results" / "exp2"
-    figure_dir = PROJECT_ROOT / "figures" / "exp2"
+    result_dir = PROJECT_ROOT / "results" / "Garnet_exp2"
+    figure_dir = PROJECT_ROOT / "figures" / "Garnet_exp2"
     ensure_dir(figure_dir)
 
-    result_path = result_dir / "exp2_results.csv"
+    result_path = result_dir / "Garnet_exp2.csv"
     df = pd.read_csv(result_path)
 
     # Keep only final performance rows.
@@ -87,7 +89,7 @@ def main():
     if perf.empty:
         raise ValueError(
             "No matching performance rows found. "
-            "Please make sure exp2_results.csv contains "
+            "Please make sure Garnet_exp2.csv contains "
             "Similarity-aware and Uniform."
         )
 
@@ -171,7 +173,7 @@ def main():
     ]
 
     ax.legend(handles=legend_handles, loc="lower left")
-    
+
     set_integer_yticks_keep_limits(ax)
 
     # -----------------------------
@@ -233,12 +235,15 @@ def main():
 
     fig.tight_layout()
 
-    fig.savefig(figure_dir / "exp2_bad_source_stress_test.pdf")
-    fig.savefig(figure_dir / "exp2_bad_source_stress_test.png", dpi=300)
+    figure_pdf_path = figure_dir / "Garnet_exp2.pdf"
+    figure_png_path = figure_dir / "Garnet_exp2.png"
 
-    print("Experiment 2 figure regenerated from saved results.")
+    fig.savefig(figure_pdf_path)
+    fig.savefig(figure_png_path, dpi=300)
+
+    print("Garnet Experiment 2 figure regenerated from saved results.")
     print(f"Read results from: {result_path}")
-    print(f"Saved figure to: {figure_dir / 'exp2_bad_source_stress_test.pdf'}")
+    print(f"Saved figure to: {figure_pdf_path}")
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ from src.algorithms import run_periodic_learning
 from src.evaluation import greedy_policy, evaluate_policy, target_value_iteration
 from src.utils import similarity_weights, uniform_weights, mean_and_sem, ensure_dir
 
+
 def main():
     # -----------------------------
     # Experiment parameters
@@ -43,8 +44,8 @@ def main():
 
     num_seeds = 20
 
-    result_dir = PROJECT_ROOT / "results" / "exp1"
-    figure_dir = PROJECT_ROOT / "figures" / "exp1"
+    result_dir = PROJECT_ROOT / "results" / "Garnet_exp1"
+    figure_dir = PROJECT_ROOT / "figures" / "Garnet_exp1"
     ensure_dir(result_dir)
     ensure_dir(figure_dir)
 
@@ -172,7 +173,7 @@ def main():
     # Save raw results
     # -----------------------------
     df = pd.DataFrame(all_rows)
-    result_path = result_dir / "exp1_results.csv"
+    result_path = result_dir / "Garnet_exp1.csv"
     df.to_csv(result_path, index=False)
 
     # -----------------------------
@@ -262,12 +263,15 @@ def main():
 
     fig.tight_layout()
 
-    fig.savefig(figure_dir / "exp1_heterogeneous_sources.pdf")
-    fig.savefig(figure_dir / "exp1_heterogeneous_sources.png", dpi=300)
+    figure_pdf_path = figure_dir / "Garnet_exp1.pdf"
+    figure_png_path = figure_dir / "Garnet_exp1.png"
+
+    fig.savefig(figure_pdf_path)
+    fig.savefig(figure_png_path, dpi=300)
 
     print("Experiment 1 finished.")
     print(f"Results saved to: {result_path}")
-    print(f"Figure saved to: {figure_dir / 'exp1_heterogeneous_sources.pdf'}")
+    print(f"Figure saved to: {figure_pdf_path}")
 
 
 if __name__ == "__main__":

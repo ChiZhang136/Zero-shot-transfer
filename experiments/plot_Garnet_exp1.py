@@ -42,6 +42,7 @@ PLOT_STYLES = {
     },
 }
 
+
 def set_integer_yticks_keep_limits(ax):
     """
     Use integer y-axis ticks without changing the current y-axis limits.
@@ -60,6 +61,7 @@ def set_integer_yticks_keep_limits(ax):
     # Restore the original limits so that the plot range is unchanged.
     ax.set_ylim(ymin, ymax)
 
+
 def mean_and_sem(x, axis=0):
     x = np.asarray(x, dtype=float)
     mean = np.mean(x, axis=axis)
@@ -68,11 +70,11 @@ def mean_and_sem(x, axis=0):
 
 
 def main():
-    result_dir = PROJECT_ROOT / "results" / "exp1"
-    figure_dir = PROJECT_ROOT / "figures" / "exp1"
+    result_dir = PROJECT_ROOT / "results" / "Garnet_exp1"
+    figure_dir = PROJECT_ROOT / "figures" / "Garnet_exp1"
     ensure_dir(figure_dir)
 
-    result_path = result_dir / "exp1_results.csv"
+    result_path = result_dir / "Garnet_exp1.csv"
     df = pd.read_csv(result_path)
 
     # Keep only the plotted methods.
@@ -81,7 +83,7 @@ def main():
     if perf.empty:
         raise ValueError(
             "No matching performance rows found. "
-            "Please make sure exp1_results.csv contains "
+            "Please make sure Garnet_exp1.csv contains "
             "Maximum-based, Similarity-aware, and Uniform."
         )
 
@@ -166,12 +168,15 @@ def main():
 
     fig.tight_layout()
 
-    fig.savefig(figure_dir / "exp1_heterogeneous_sources.pdf")
-    fig.savefig(figure_dir / "exp1_heterogeneous_sources.png", dpi=300)
+    figure_pdf_path = figure_dir / "Garnet_exp1.pdf"
+    figure_png_path = figure_dir / "Garnet_exp1.png"
 
-    print("Experiment 1 figure regenerated from saved results.")
+    fig.savefig(figure_pdf_path)
+    fig.savefig(figure_png_path, dpi=300)
+
+    print("Garnet Experiment 1 figure regenerated from saved results.")
     print(f"Read results from: {result_path}")
-    print(f"Saved figure to: {figure_dir / 'exp1_heterogeneous_sources.pdf'}")
+    print(f"Saved figure to: {figure_pdf_path}")
 
 
 if __name__ == "__main__":

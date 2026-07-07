@@ -29,18 +29,6 @@ METHOD_ORDER = [
     "Similarity-aware",
 ]
 
-PLOT_STYLES = {
-    "Maximum-based": {
-        "color": MAX_COLOR,
-        "linestyle": "-",
-        "marker": "o",
-    },
-    "Similarity-aware": {
-        "color": SIM_COLOR,
-        "linestyle": "-",
-        "marker": "o",
-    },
-}
 
 def set_integer_yticks_keep_limits(ax):
     """
@@ -60,6 +48,7 @@ def set_integer_yticks_keep_limits(ax):
     # Restore the original limits so that the plot range is unchanged.
     ax.set_ylim(ymin, ymax)
 
+
 def mean_and_sem(x, axis=0):
     x = np.asarray(x, dtype=float)
     mean = np.mean(x, axis=axis)
@@ -68,26 +57,25 @@ def mean_and_sem(x, axis=0):
 
 
 def main():
-    result_dir = PROJECT_ROOT / "results" / "exp3"
-    figure_dir = PROJECT_ROOT / "figures" / "exp3"
+    result_dir = PROJECT_ROOT / "results" / "Garnet_exp3"
+    figure_dir = PROJECT_ROOT / "figures" / "Garnet_exp3"
     ensure_dir(figure_dir)
 
-    result_path = result_dir / "exp3_results.csv"
+    result_path = result_dir / "Garnet_exp3.csv"
     df = pd.read_csv(result_path)
 
-    # Keep only final performance rows.
     perf = df[df["method"].isin(METHOD_ORDER)].copy()
 
     if perf.empty:
         raise ValueError(
             "No matching performance rows found. "
-            "Please make sure exp3_results.csv contains "
+            "Please make sure Garnet_exp3.csv contains "
             "Maximum-based and Similarity-aware."
         )
 
     bias_levels = np.sort(perf["bias_level"].unique().astype(float))
 
-    method_tables = {}
+    curve_stats = {}
 
     for method_name in METHOD_ORDER:
         method_df = perf[perf["method"] == method_name]
@@ -102,23 +90,7 @@ def main():
             .sort_index(axis=1)
         )
 
-        method_tables[method_name] = table
-
-    # Use only bias levels shared by all methods.
-    common_bias_levels = None
-
-    for method_name in METHOD_ORDER:
-        levels = method_tables[method_name].columns.to_numpy(dtype=float)
-
-        if common_bias_levels is None:
-            common_bias_levels = levels
-        else:
-            common_bias_levels = np.intersect1d(common_bias_levels, levels)
-
-    curve_stats = {}
-
-    for method_name in METHOD_ORDER:
-        curves = method_tables[method_name][common_bias_levels].to_numpy()
+        curves = table[bias_levels].to_numpy()
         mean_curve, sem_curve = mean_and_sem(curves, axis=0)
 
         curve_stats[method_name] = {
@@ -131,15 +103,27 @@ def main():
     # -----------------------------
     fig, ax = plt.subplots(figsize=FIGSIZE)
 
-    for method_name in METHOD_ORDER:
-        style = PLOT_STYLES[method_name]
+    plot_styles = {
+        "Maximum-based": {
+            "color": MAX_COLOR,
+            "linestyle": "-",
+            "marker": "o",
+        },
+        "Similarity-aware": {
+            "color": SIM_COLOR,
+            "linestyle": "-",
+            "marker": "o",
+        },
+    }
 
-        # Convert normalized fraction to percentage values.
+    for method_name in METHOD_ORDER:
+        style = plot_styles[method_name]
+
         mean_curve = 100.0 * curve_stats[method_name]["mean"]
         sem_curve = 100.0 * curve_stats[method_name]["sem"]
 
         ax.plot(
-            common_bias_levels,
+            bias_levels,
             mean_curve,
             color=style["color"],
             linestyle=style["linestyle"],
@@ -150,7 +134,7 @@ def main():
         )
 
         ax.fill_between(
-            common_bias_levels,
+            bias_levels,
             mean_curve - sem_curve,
             mean_curve + sem_curve,
             color=style["color"],
@@ -161,8 +145,8 @@ def main():
     ax.set_xlabel(r"$\delta$")
     ax.set_ylabel(r"$\nu(T)$ (%)")
 
-    ax.set_xticks(common_bias_levels)
-    ax.set_xticklabels([f"{d:.1f}" for d in common_bias_levels])
+    ax.set_xticks(bias_levels)
+    ax.set_xticklabels([f"{d:.1f}" for d in bias_levels])
 
     ax.set_axisbelow(True)
     ax.grid(True, which="major", axis="both", alpha=GRID_ALPHA)
@@ -173,12 +157,15 @@ def main():
 
     fig.tight_layout()
 
-    fig.savefig(figure_dir / "exp3_bias_sensitivity.pdf")
-    fig.savefig(figure_dir / "exp3_bias_sensitivity.png", dpi=300)
+    figure_pdf_path = figure_dir / "Garnet_exp3.pdf"
+    figure_png_path = figure_dir / "Garnet_exp3.png"
 
-    print("Experiment 3 figure regenerated from saved results.")
+    fig.savefig(figure_pdf_path)
+    fig.savefig(figure_png_path, dpi=300)
+
+    print("Garnet Experiment 3 figure regenerated from saved results.")
     print(f"Read results from: {result_path}")
-    print(f"Saved figure to: {figure_dir / 'exp3_bias_sensitivity.pdf'}")
+    print(f"Saved figure to: {figure_pdf_path}")
 
 
 if __name__ == "__main__":

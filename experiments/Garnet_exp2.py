@@ -39,6 +39,25 @@ SIM_COLOR = "C0"
 UNI_COLOR = "C1"
 
 
+def set_integer_yticks_keep_limits(ax):
+    """
+    Use integer y-axis ticks without changing the current y-axis limits.
+    """
+    ymin, ymax = ax.get_ylim()
+
+    ticks = np.arange(
+        np.ceil(ymin),
+        np.floor(ymax) + 1,
+        1.0,
+    )
+
+    ax.set_yticks(ticks)
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.0f"))
+
+    # Restore the original limits so that the plot range is unchanged.
+    ax.set_ylim(ymin, ymax)
+
+
 def style_boxplot(boxplot_dict, color):
     """Apply a unified style to matplotlib boxplot objects."""
     for box in boxplot_dict["boxes"]:
@@ -64,23 +83,6 @@ def style_boxplot(boxplot_dict, color):
         flier.set_markerfacecolor("none")
         flier.set_markersize(5)
 
-def set_integer_yticks_keep_limits(ax):
-    """
-    Use integer y-axis ticks without changing the current y-axis limits.
-    """
-    ymin, ymax = ax.get_ylim()
-
-    ticks = np.arange(
-        np.ceil(ymin),
-        np.floor(ymax) + 1,
-        1.0,
-    )
-
-    ax.set_yticks(ticks)
-    ax.yaxis.set_major_formatter(FormatStrFormatter("%.0f"))
-
-    # Restore the original limits so that the plot range is unchanged.
-    ax.set_ylim(ymin, ymax)
 
 def construct_source_with_prescribed_gamma(
     P0,
@@ -223,8 +225,8 @@ def main():
     # Number of random candidates used to select a policy-mismatched bad source.
     num_bad_candidates = 20
 
-    result_dir = PROJECT_ROOT / "results" / "exp2"
-    figure_dir = PROJECT_ROOT / "figures" / "exp2"
+    result_dir = PROJECT_ROOT / "results" / "Garnet_exp2"
+    figure_dir = PROJECT_ROOT / "figures" / "Garnet_exp2"
     ensure_dir(result_dir)
     ensure_dir(figure_dir)
 
@@ -233,7 +235,7 @@ def main():
     sim_by_bad_gamma = {float(g): [] for g in bad_source_gammas}
     uni_by_bad_gamma = {float(g): [] for g in bad_source_gammas}
 
-    for seed in tqdm(range(num_seeds), desc="Experiment 2 seeds"):
+    for seed in tqdm(range(num_seeds), desc="Garnet Experiment 2 seeds"):
         # -----------------------------
         # Generate target Garnet MDP
         # -----------------------------
@@ -433,7 +435,7 @@ def main():
     # Save raw results
     # -----------------------------
     df = pd.DataFrame(all_rows)
-    result_path = result_dir / "exp2_results.csv"
+    result_path = result_dir / "Garnet_exp2.csv"
     df.to_csv(result_path, index=False)
 
     # -----------------------------
@@ -465,6 +467,9 @@ def main():
             ]["normalized_performance"].to_numpy()
         )
 
+    # -----------------------------
+    # Main plot: boxplot of final target performance
+    # -----------------------------
     offset = 0.18
     box_width = 0.28
 
@@ -564,12 +569,15 @@ def main():
 
     fig.tight_layout()
 
-    fig.savefig(figure_dir / "exp2_bad_source_stress_test.pdf")
-    fig.savefig(figure_dir / "exp2_bad_source_stress_test.png", dpi=300)
+    figure_pdf_path = figure_dir / "Garnet_exp2.pdf"
+    figure_png_path = figure_dir / "Garnet_exp2.png"
 
-    print("Experiment 2 finished.")
+    fig.savefig(figure_pdf_path)
+    fig.savefig(figure_png_path, dpi=300)
+
+    print("Garnet Experiment 2 finished.")
     print(f"Results saved to: {result_path}")
-    print(f"Figure saved to: {figure_dir / 'exp2_bad_source_stress_test.pdf'}")
+    print(f"Figure saved to: {figure_pdf_path}")
 
 
 if __name__ == "__main__":

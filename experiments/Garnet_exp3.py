@@ -37,6 +37,25 @@ METHOD_ORDER = [
 ]
 
 
+def set_integer_yticks_keep_limits(ax):
+    """
+    Use integer y-axis ticks without changing the current y-axis limits.
+    """
+    ymin, ymax = ax.get_ylim()
+
+    ticks = np.arange(
+        np.ceil(ymin),
+        np.floor(ymax) + 1,
+        1.0,
+    )
+
+    ax.set_yticks(ticks)
+    ax.yaxis.set_major_formatter(FormatStrFormatter("%.0f"))
+
+    # Restore the original limits so that the plot range is unchanged.
+    ax.set_ylim(ymin, ymax)
+
+
 def mean_and_sem(x, axis=0):
     x = np.asarray(x, dtype=float)
     mean = np.mean(x, axis=axis)
@@ -187,8 +206,8 @@ def main():
     # Since rewards are in [0, 1], delta is measured in reward units.
     bias_levels = np.array([0.0, 0.5, 1.0, 1.5, 2.0])
 
-    result_dir = PROJECT_ROOT / "results" / "exp3"
-    figure_dir = PROJECT_ROOT / "figures" / "exp3"
+    result_dir = PROJECT_ROOT / "results" / "Garnet_exp3"
+    figure_dir = PROJECT_ROOT / "figures" / "Garnet_exp3"
     ensure_dir(result_dir)
     ensure_dir(figure_dir)
 
@@ -199,7 +218,7 @@ def main():
         for method in METHOD_ORDER
     }
 
-    for seed in tqdm(range(num_seeds), desc="Experiment 3 seeds"):
+    for seed in tqdm(range(num_seeds), desc="Garnet Experiment 3 seeds"):
         # -----------------------------
         # Generate target and sources
         # -----------------------------
@@ -341,7 +360,7 @@ def main():
     # Save raw results
     # -----------------------------
     df = pd.DataFrame(all_rows)
-    result_path = result_dir / "exp3_results.csv"
+    result_path = result_dir / "Garnet_exp3.csv"
     df.to_csv(result_path, index=False)
 
     # -----------------------------
@@ -419,14 +438,19 @@ def main():
 
     ax.legend(loc="lower left")
 
+    set_integer_yticks_keep_limits(ax)
+
     fig.tight_layout()
 
-    fig.savefig(figure_dir / "exp3_bias_sensitivity.pdf")
-    fig.savefig(figure_dir / "exp3_bias_sensitivity.png", dpi=300)
+    figure_pdf_path = figure_dir / "Garnet_exp3.pdf"
+    figure_png_path = figure_dir / "Garnet_exp3.png"
 
-    print("Experiment 3 finished.")
+    fig.savefig(figure_pdf_path)
+    fig.savefig(figure_png_path, dpi=300)
+
+    print("Garnet Experiment 3 finished.")
     print(f"Results saved to: {result_path}")
-    print(f"Figure saved to: {figure_dir / 'exp3_bias_sensitivity.pdf'}")
+    print(f"Figure saved to: {figure_pdf_path}")
 
 
 if __name__ == "__main__":
