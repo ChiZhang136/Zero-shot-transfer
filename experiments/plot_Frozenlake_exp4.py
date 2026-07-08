@@ -16,11 +16,11 @@ import matplotlib.pyplot as plt
 RESULT_PATH = (
     PROJECT_ROOT
     / "results"
-    / "Frozenlake_exp1"
-    / "Frozenlake_exp1_results.csv"
+    / "Frozenlake_exp4"
+    / "Frozenlake_exp4.csv"
 )
 
-FIGURE_DIR = PROJECT_ROOT / "figures" / "Frozenlake_exp1"
+FIGURE_DIR = PROJECT_ROOT / "figures" / "Frozenlake_exp4"
 FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -28,30 +28,37 @@ FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 # Plot style
 # -----------------------------
 FIGSIZE = (6.5, 4.2)
+
 LINE_WIDTH = 2.0
 SHADE_ALPHA = 0.15
 GRID_ALPHA = 0.25
 
+MAX_COLOR = "C2"
+SIM_COLOR = "C0"
+
 METHOD_ORDER = [
     "Maximum-based",
     "Similarity-aware",
-    "Uniform",
 ]
 
 PLOT_STYLES = {
     "Maximum-based": {
-        "color": "C2",
+        "color": MAX_COLOR,
         "linestyle": "-",
     },
     "Similarity-aware": {
-        "color": "C0",
-        "linestyle": "-",
-    },
-    "Uniform": {
-        "color": "C1",
+        "color": SIM_COLOR,
         "linestyle": "-",
     },
 }
+
+# Main plotted metric.
+# Options:
+#   "signed_selection_bias"
+#   "selection_bias_inf_norm"
+#   "signed_selection_bias_percent"
+#   "selection_bias_inf_norm_percent"
+PLOT_METRIC = "signed_selection_bias"
 
 
 def set_clean_yticks_keep_limits(ax, nbins=6):
@@ -75,6 +82,22 @@ def mean_and_sem(x, axis=0):
     return mean, sem
 
 
+def get_ylabel(metric_name):
+    if metric_name == "signed_selection_bias":
+        return r"$\mu(t)$"
+
+    if metric_name == "selection_bias_inf_norm":
+        return r"Selection bias magnitude"
+
+    if metric_name == "signed_selection_bias_percent":
+        return r"$\mu(t)$ (%)"
+
+    if metric_name == "selection_bias_inf_norm_percent":
+        return r"Selection bias magnitude (%)"
+
+    return metric_name
+
+
 def main():
     if not RESULT_PATH.exists():
         raise FileNotFoundError(f"Result file not found: {RESULT_PATH}")
@@ -82,25 +105,27 @@ def main():
     df = pd.read_csv(RESULT_PATH)
 
     required_cols = {
-        "run_id",
         "iteration",
         "method",
-        "normalized_performance",
+        PLOT_METRIC,
     }
 
     missing_cols = required_cols - set(df.columns)
     if missing_cols:
         raise ValueError(f"Missing required columns: {missing_cols}")
 
-    # Keep only performance rows.
+    # Keep only performance / diagnostic rows.
     perf = df[df["method"].isin(METHOD_ORDER)].copy()
-    perf = perf.dropna(subset=["iteration", "normalized_performance"])
+    perf = perf.dropna(subset=["iteration", PLOT_METRIC])
     perf = perf[perf["iteration"].astype(int) >= 0].copy()
+
+    if perf.empty:
+        raise ValueError("No valid diagnostic rows found.")
 
     iterations = np.sort(perf["iteration"].unique().astype(int))
 
     # -----------------------------
-    # Plot: normalized target performance mean ± SEM
+    # Plot
     # -----------------------------
     fig, ax = plt.subplots(figsize=FIGSIZE)
 
@@ -113,9 +138,7 @@ def main():
         for t in iterations:
             values = method_df[
                 method_df["iteration"].astype(int) == int(t)
-            ]["normalized_performance"].to_numpy(dtype=float)
-
-            values = 100.0 * values
+            ][PLOT_METRIC].to_numpy(dtype=float)
 
             mean_y, sem_y = mean_and_sem(values, axis=0)
 
@@ -146,57 +169,58 @@ def main():
         )
 
     ax.set_xlabel(r"$t$")
-    ax.set_ylabel(r"$\nu(t)$ (%)")
+    ax.set_ylabel(get_ylabel(PLOT_METRIC))
 
     ax.set_axisbelow(True)
     ax.grid(True, which="major", axis="both", alpha=GRID_ALPHA)
 
-    ax.legend(loc="lower right")
+    ax.legend(loc="upper right")
 
     # -----------------------------
-    # Keep a clean y-axis range
+    # Make y-axis range slightly taller
     # -----------------------------
     ymin, ymax = ax.get_ylim()
     yrange = ymax - ymin
 
+    if yrange <= 1e-12:
+        yrange = max(abs(ymax), 1.0)
+
     ax.set_ylim(
-        max(0.0, ymin - 0.02 * yrange),
-        ymax + 0.05 * yrange,
+        ymin - 0.05 * yrange,
+        ymax + 0.10 * yrange,
     )
 
     set_clean_yticks_keep_limits(ax, nbins=6)
 
     fig.tight_layout()
 
-    pdf_path = FIGURE_DIR / "Frozenlake_exp1.pdf"
-    png_path = FIGURE_DIR / "Frozenlake_exp1.png"
+    pdf_path = FIGURE_DIR / "Frozenlake_exp4.pdf"
+    png_path = FIGURE_DIR / "Frozenlake_exp4.png"
 
     fig.savefig(pdf_path)
     fig.savefig(png_path, dpi=300)
 
-    print("FrozenLake Exp1 plot regenerated from saved results.")
+    print("FrozenLake Exp4 plot regenerated from saved results.")
     print(f"Loaded results from: {RESULT_PATH}")
     print(f"PDF saved to: {pdf_path}")
     print(f"PNG saved to: {png_path}")
 
-    print("\nSummary:")
+    print("\nFinal-time summary:")
     final_t = int(iterations[-1])
 
     for method_name in METHOD_ORDER:
         values = perf[
             (perf["method"] == method_name)
             & (perf["iteration"].astype(int) == final_t)
-        ]["normalized_performance"].to_numpy(dtype=float)
-
-        values = 100.0 * values
+        ][PLOT_METRIC].to_numpy(dtype=float)
 
         mean_y, sem_y = mean_and_sem(values, axis=0)
 
         print(
             f"{method_name}: "
             f"t={final_t}, "
-            f"mean={mean_y:.2f}, "
-            f"sem={sem_y:.2f}, "
+            f"{PLOT_METRIC} mean={mean_y:.8f}, "
+            f"sem={sem_y:.8f}, "
             f"n={len(values)}"
         )
 

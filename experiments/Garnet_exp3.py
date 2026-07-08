@@ -59,8 +59,50 @@ def set_integer_yticks_keep_limits(ax):
 def mean_and_sem(x, axis=0):
     x = np.asarray(x, dtype=float)
     mean = np.mean(x, axis=axis)
-    sem = np.std(x, axis=axis, ddof=1) / np.sqrt(x.shape[axis])
+
+    if x.shape[axis] <= 1:
+        sem = np.zeros_like(mean)
+    else:
+        sem = np.std(x, axis=axis, ddof=1) / np.sqrt(x.shape[axis])
+
     return mean, sem
+
+
+def compute_local_transition_discrepancies(P_sources, P0, p_norm=1):
+    """
+    Compute state-action-wise transition discrepancies:
+
+        R_k(s,a) = || P_k(.|s,a) - P_0(.|s,a) ||_p.
+
+    Parameters
+    ----------
+    P_sources : np.ndarray
+        Shape: (K, S, A, S)
+    P0 : np.ndarray
+        Shape: (S, A, S)
+    p_norm : int, float, or str
+        Norm used over next-state distributions.
+
+    Returns
+    -------
+    local_gammas : np.ndarray
+        Shape: (K, S, A)
+    """
+    P_sources = np.asarray(P_sources, dtype=float)
+    P0 = np.asarray(P0, dtype=float)
+
+    diff = P_sources - P0[None, :, :, :]
+
+    if p_norm == 1:
+        local_gammas = np.sum(np.abs(diff), axis=-1)
+    elif p_norm == 2:
+        local_gammas = np.sqrt(np.sum(diff ** 2, axis=-1))
+    elif p_norm == np.inf or p_norm == "inf":
+        local_gammas = np.max(np.abs(diff), axis=-1)
+    else:
+        local_gammas = np.linalg.norm(diff, ord=p_norm, axis=-1)
+
+    return local_gammas
 
 
 def run_periodic_learning_with_unbiased_operator_estimates(
@@ -90,6 +132,10 @@ def run_periodic_learning_with_unbiased_operator_estimates(
 
     where xi_{k,t}(s,a) has zero mean.
 
+    gammas can be either:
+        shape (K,)       : source-level scalar radius Gamma_k
+        shape (K, S, A)  : state-action-wise radius R_k(s,a)
+
     operator_noise has shape:
         (total_iterations, K, S, A)
 
@@ -115,7 +161,7 @@ def run_periodic_learning_with_unbiased_operator_estimates(
         if weights.shape[0] != K:
             raise ValueError("weights must have length K.")
 
-    Q_locals = np.zeros((K, S, A))
+    Q_locals = np.zeros((K, S, A), dtype=float)
 
     for t in range(total_iterations):
         # -----------------------------
@@ -153,6 +199,7 @@ def run_periodic_learning_with_unbiased_operator_estimates(
                 weights=weights,
                 aggregation_type=aggregation_type,
             )
+
             Q_locals[:] = Q_agg[None, :, :]
 
     Q_final = aggregate_q_tables(
@@ -186,11 +233,13 @@ def main():
     discount = 0.95
 
     # Same heterogeneous source configuration as Experiment 1.
+    # These source-level Gamma values are used to generate source domains
+    # and compute similarity weights.
     source_gammas = np.array([0.10, 0.20, 0.40, 0.80, 1.60])
     K = len(source_gammas)
 
     # Robust geometry:
-    # p_norm = 1 means Gamma_k is computed by L1 transition distance.
+    # p_norm = 1 means local R_k(s,a) is computed by L1 transition distance.
     # robust_q = "inf" means kappa_q(V) = (max V - min V) / 2.
     p_norm = 1
     robust_q = "inf"
@@ -243,8 +292,22 @@ def main():
         P0 = target_mdp.transitions
 
         # -----------------------------
+        # State-action-wise local radii
+        # -----------------------------
+        local_source_gammas = compute_local_transition_discrepancies(
+            P_sources=P_sources,
+            P0=P0,
+            p_norm=p_norm,
+        )
+
+        local_gamma_max = np.max(local_source_gammas, axis=(1, 2))
+        local_gamma_mean = np.mean(local_source_gammas, axis=(1, 2))
+
+        # -----------------------------
         # Similarity-aware weights
         # -----------------------------
+        # Use source-level discrepancies for weighting.
+        # Use local R_k(s,a) only for robust Bellman penalties.
         w_sim = similarity_weights(actual_source_gammas, eps=1e-6, power=1.0)
 
         # -----------------------------
@@ -255,7 +318,9 @@ def main():
             rewards=rewards,
             discount=discount,
         )
+
         pi_star = greedy_policy(Q_star)
+
         _, oracle_perf = evaluate_policy(
             P=P0,
             rewards=rewards,
@@ -266,6 +331,7 @@ def main():
         # Base zero-mean operator-noise sequence for this seed.
         # The same sequence is reused for all delta values and both methods.
         rng = np.random.default_rng(3000 + seed)
+
         base_operator_noise = rng.uniform(
             low=-1.0,
             high=1.0,
@@ -281,7 +347,9 @@ def main():
             Q_max, max_perf = run_periodic_learning_with_unbiased_operator_estimates(
                 P_sources=P_sources,
                 rewards=rewards,
-                gammas=actual_source_gammas,
+                # Important change:
+                # use R_k(s,a), shape (K, S, A), instead of source-level Gamma_k.
+                gammas=local_source_gammas,
                 operator_noise=base_operator_noise,
                 bias_level=delta,
                 weights=None,
@@ -305,6 +373,11 @@ def main():
                     "normalized_performance": float(max_norm),
                     "target_performance": float(max_perf),
                     "oracle_performance": float(oracle_perf),
+                    "penalty_type": "state_action_local",
+                    "p_norm": str(p_norm),
+                    "robust_q": robust_q,
+                    "sync_period": int(sync_period),
+                    "stepsize": float(stepsize),
                 }
             )
 
@@ -314,7 +387,9 @@ def main():
             Q_sim, sim_perf = run_periodic_learning_with_unbiased_operator_estimates(
                 P_sources=P_sources,
                 rewards=rewards,
-                gammas=actual_source_gammas,
+                # Important change:
+                # use R_k(s,a), shape (K, S, A), instead of source-level Gamma_k.
+                gammas=local_source_gammas,
                 operator_noise=base_operator_noise,
                 bias_level=delta,
                 weights=w_sim,
@@ -338,6 +413,11 @@ def main():
                     "normalized_performance": float(sim_norm),
                     "target_performance": float(sim_perf),
                     "oracle_performance": float(oracle_perf),
+                    "penalty_type": "state_action_local",
+                    "p_norm": str(p_norm),
+                    "robust_q": robust_q,
+                    "sync_period": int(sync_period),
+                    "stepsize": float(stepsize),
                 }
             )
 
@@ -351,8 +431,15 @@ def main():
                     "source_index": k,
                     "source_gamma": float(source_gammas[k]),
                     "actual_source_gamma": float(actual_source_gammas[k]),
+                    "local_gamma_max": float(local_gamma_max[k]),
+                    "local_gamma_mean": float(local_gamma_mean[k]),
                     "mixing_coefficient": float(rhos[k]),
                     "similarity_weight": float(w_sim[k]),
+                    "penalty_type": "state_action_local",
+                    "p_norm": str(p_norm),
+                    "robust_q": robust_q,
+                    "sync_period": int(sync_period),
+                    "stepsize": float(stepsize),
                 }
             )
 
@@ -392,7 +479,7 @@ def main():
         "Maximum-based": {
             "color": MAX_COLOR,
             "linestyle": "-",
-            "marker": "o",
+            "marker": "s",
         },
         "Similarity-aware": {
             "color": SIM_COLOR,
@@ -449,6 +536,7 @@ def main():
     fig.savefig(figure_png_path, dpi=300)
 
     print("Garnet Experiment 3 finished.")
+    print("Penalty type: state-action local radii R_k(s,a)")
     print(f"Results saved to: {result_path}")
     print(f"Figure saved to: {figure_pdf_path}")
 

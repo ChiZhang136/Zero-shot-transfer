@@ -9,7 +9,19 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from src.utils import ensure_dir
+
+# -----------------------------
+# Paths
+# -----------------------------
+RESULT_PATH = (
+    PROJECT_ROOT
+    / "results"
+    / "Garnet_exp3"
+    / "Garnet_exp3.csv"
+)
+
+FIGURE_DIR = PROJECT_ROOT / "figures" / "Garnet_exp3"
+FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # -----------------------------
@@ -28,6 +40,19 @@ METHOD_ORDER = [
     "Maximum-based",
     "Similarity-aware",
 ]
+
+PLOT_STYLES = {
+    "Maximum-based": {
+        "color": MAX_COLOR,
+        "linestyle": "-",
+        "marker": "s",
+    },
+    "Similarity-aware": {
+        "color": SIM_COLOR,
+        "linestyle": "-",
+        "marker": "o",
+    },
+}
 
 
 def set_integer_yticks_keep_limits(ax):
@@ -52,50 +77,67 @@ def set_integer_yticks_keep_limits(ax):
 def mean_and_sem(x, axis=0):
     x = np.asarray(x, dtype=float)
     mean = np.mean(x, axis=axis)
-    sem = np.std(x, axis=axis, ddof=1) / np.sqrt(x.shape[axis])
+
+    if x.shape[axis] <= 1:
+        sem = np.zeros_like(mean)
+    else:
+        sem = np.std(x, axis=axis, ddof=1) / np.sqrt(x.shape[axis])
+
     return mean, sem
 
 
 def main():
-    result_dir = PROJECT_ROOT / "results" / "Garnet_exp3"
-    figure_dir = PROJECT_ROOT / "figures" / "Garnet_exp3"
-    ensure_dir(figure_dir)
+    if not RESULT_PATH.exists():
+        raise FileNotFoundError(f"Result file not found: {RESULT_PATH}")
 
-    result_path = result_dir / "Garnet_exp3.csv"
-    df = pd.read_csv(result_path)
+    df = pd.read_csv(RESULT_PATH)
 
-    perf = df[df["method"].isin(METHOD_ORDER)].copy()
+    required_cols = {
+        "bias_level",
+        "method",
+        "normalized_performance",
+    }
 
-    if perf.empty:
-        raise ValueError(
-            "No matching performance rows found. "
-            "Please make sure Garnet_exp3.csv contains "
-            "Maximum-based and Similarity-aware."
-        )
+    missing_cols = required_cols - set(df.columns)
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
 
-    bias_levels = np.sort(perf["bias_level"].unique().astype(float))
+    # Remove metadata rows and keep only plotted methods.
+    perf_df = df[df["method"].isin(METHOD_ORDER)].copy()
+
+    # Exclude metadata bias_level = -1 if present.
+    perf_df = perf_df[perf_df["bias_level"] >= 0].copy()
+
+    bias_levels = np.sort(perf_df["bias_level"].unique().astype(float))
 
     curve_stats = {}
 
     for method_name in METHOD_ORDER:
-        method_df = perf[perf["method"] == method_name]
+        method_df = perf_df[perf_df["method"] == method_name].copy()
 
-        if method_df.empty:
-            raise ValueError(f"Missing method in results: {method_name}")
+        curves = []
 
-        table = (
-            method_df
-            .pivot(index="seed", columns="bias_level", values="normalized_performance")
-            .sort_index(axis=0)
-            .sort_index(axis=1)
-        )
+        for delta in bias_levels:
+            values = method_df[
+                np.isclose(method_df["bias_level"].astype(float), delta)
+            ]["normalized_performance"].to_numpy(dtype=float)
 
-        curves = table[bias_levels].to_numpy()
+            if len(values) == 0:
+                raise ValueError(
+                    f"No data found for method={method_name}, delta={delta}."
+                )
+
+            curves.append(values)
+
+        # Shape: (num_seeds, num_bias_levels)
+        curves = np.asarray(curves, dtype=float).T
+
         mean_curve, sem_curve = mean_and_sem(curves, axis=0)
 
         curve_stats[method_name] = {
             "mean": mean_curve,
             "sem": sem_curve,
+            "num_runs": curves.shape[0],
         }
 
     # -----------------------------
@@ -103,21 +145,8 @@ def main():
     # -----------------------------
     fig, ax = plt.subplots(figsize=FIGSIZE)
 
-    plot_styles = {
-        "Maximum-based": {
-            "color": MAX_COLOR,
-            "linestyle": "-",
-            "marker": "o",
-        },
-        "Similarity-aware": {
-            "color": SIM_COLOR,
-            "linestyle": "-",
-            "marker": "o",
-        },
-    }
-
     for method_name in METHOD_ORDER:
-        style = plot_styles[method_name]
+        style = PLOT_STYLES[method_name]
 
         mean_curve = 100.0 * curve_stats[method_name]["mean"]
         sem_curve = 100.0 * curve_stats[method_name]["sem"]
@@ -157,15 +186,22 @@ def main():
 
     fig.tight_layout()
 
-    figure_pdf_path = figure_dir / "Garnet_exp3.pdf"
-    figure_png_path = figure_dir / "Garnet_exp3.png"
+    figure_pdf_path = FIGURE_DIR / "Garnet_exp3.pdf"
+    figure_png_path = FIGURE_DIR / "Garnet_exp3.png"
 
     fig.savefig(figure_pdf_path)
     fig.savefig(figure_png_path, dpi=300)
 
-    print("Garnet Experiment 3 figure regenerated from saved results.")
-    print(f"Read results from: {result_path}")
-    print(f"Saved figure to: {figure_pdf_path}")
+    print("Garnet Exp3 plot regenerated from saved results.")
+    print(f"Loaded results from: {RESULT_PATH}")
+    print(f"PDF saved to: {figure_pdf_path}")
+    print(f"PNG saved to: {figure_png_path}")
+
+    for method_name in METHOD_ORDER:
+        print(
+            f"{method_name}: "
+            f"{curve_stats[method_name]['num_runs']} runs per delta"
+        )
 
 
 if __name__ == "__main__":

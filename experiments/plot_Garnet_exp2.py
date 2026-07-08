@@ -10,7 +10,19 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from src.utils import similarity_weights, ensure_dir
+
+# -----------------------------
+# Paths
+# -----------------------------
+RESULT_PATH = (
+    PROJECT_ROOT
+    / "results"
+    / "Garnet_exp2"
+    / "Garnet_exp2.csv"
+)
+
+FIGURE_DIR = PROJECT_ROOT / "figures" / "Garnet_exp2"
+FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # -----------------------------
@@ -18,7 +30,6 @@ from src.utils import similarity_weights, ensure_dir
 # -----------------------------
 FIGSIZE = (6.5, 4.2)
 
-LINE_WIDTH = 2.0
 INSET_LINE_WIDTH = 1.1
 BOX_LINE_WIDTH = 1.6
 MEDIAN_LINE_WIDTH = 2.0
@@ -28,6 +39,11 @@ GRID_ALPHA = 0.25
 
 SIM_COLOR = "C0"
 UNI_COLOR = "C1"
+
+METHOD_ORDER = [
+    "Similarity-aware",
+    "Uniform",
+]
 
 
 def set_integer_yticks_keep_limits(ax):
@@ -75,23 +91,141 @@ def style_boxplot(boxplot_dict, color):
         flier.set_markersize(5)
 
 
+def similarity_weights(discrepancies, eps=1e-6, power=1.0):
+    discrepancies = np.asarray(discrepancies, dtype=float)
+    scores = 1.0 / np.power(discrepancies + eps, power)
+    return scores / np.sum(scores)
+
+
+def get_similarity_bad_source_weights(df, x):
+    """
+    Return similarity-aware bad-source weights for each bad-source gamma.
+
+    Preferred source:
+        performance rows with method == "Similarity-aware" and column
+        bad_source_weight.
+
+    Fallback:
+        metadata rows with prescribed_source_gamma / similarity_weight.
+
+    Final fallback:
+        recompute from prescribed good/bad gammas if metadata is available.
+    """
+    sim_bad_weight = []
+
+    perf_df = df[df["method"] == "Similarity-aware"].copy()
+
+    if "bad_source_weight" in perf_df.columns:
+        for bad_gamma in x:
+            values = perf_df[
+                np.isclose(
+                    perf_df["bad_source_gamma"].astype(float),
+                    float(bad_gamma),
+                )
+            ]["bad_source_weight"].dropna().to_numpy(dtype=float)
+
+            if len(values) > 0:
+                sim_bad_weight.append(float(np.mean(values)))
+            else:
+                sim_bad_weight.append(np.nan)
+
+        sim_bad_weight = np.asarray(sim_bad_weight, dtype=float)
+
+        if not np.any(np.isnan(sim_bad_weight)):
+            return sim_bad_weight
+
+    metadata_df = df[df["method"] == "metadata"].copy()
+
+    if {
+        "bad_source_gamma",
+        "source_type",
+        "similarity_weight",
+    }.issubset(metadata_df.columns):
+        for bad_gamma in x:
+            bad_meta = metadata_df[
+                np.isclose(
+                    metadata_df["bad_source_gamma"].astype(float),
+                    float(bad_gamma),
+                )
+                & (metadata_df["source_type"] == "bad")
+            ]
+
+            values = bad_meta["similarity_weight"].dropna().to_numpy(dtype=float)
+
+            if len(values) > 0:
+                sim_bad_weight.append(float(np.mean(values)))
+            else:
+                sim_bad_weight.append(np.nan)
+
+        sim_bad_weight = np.asarray(sim_bad_weight, dtype=float)
+
+        if not np.any(np.isnan(sim_bad_weight)):
+            return sim_bad_weight
+
+    if {
+        "bad_source_gamma",
+        "source_type",
+        "prescribed_source_gamma",
+    }.issubset(metadata_df.columns):
+        first_bad_gamma = float(x[0])
+
+        good_meta = metadata_df[
+            np.isclose(
+                metadata_df["bad_source_gamma"].astype(float),
+                first_bad_gamma,
+            )
+            & (metadata_df["source_type"] == "good")
+        ].copy()
+
+        good_meta = good_meta.sort_values("source_index")
+        good_gammas = good_meta["prescribed_source_gamma"].to_numpy(dtype=float)
+
+        if len(good_gammas) == 0:
+            raise ValueError(
+                "Cannot infer good-source gammas from metadata rows."
+            )
+
+        sim_bad_weight = []
+
+        for bad_gamma in x:
+            prescribed_gammas = np.concatenate(
+                [good_gammas, np.array([float(bad_gamma)])]
+            )
+
+            w_sim = similarity_weights(
+                prescribed_gammas,
+                eps=1e-6,
+                power=1.0,
+            )
+
+            sim_bad_weight.append(float(w_sim[-1]))
+
+        return np.asarray(sim_bad_weight, dtype=float)
+
+    raise ValueError(
+        "Cannot recover similarity-aware bad-source weights from the CSV."
+    )
+
+
 def main():
-    result_dir = PROJECT_ROOT / "results" / "Garnet_exp2"
-    figure_dir = PROJECT_ROOT / "figures" / "Garnet_exp2"
-    ensure_dir(figure_dir)
+    if not RESULT_PATH.exists():
+        raise FileNotFoundError(f"Result file not found: {RESULT_PATH}")
 
-    result_path = result_dir / "Garnet_exp2.csv"
-    df = pd.read_csv(result_path)
+    df = pd.read_csv(RESULT_PATH)
 
-    # Keep only final performance rows.
-    perf = df[df["method"].isin(["Similarity-aware", "Uniform"])].copy()
+    required_cols = {
+        "bad_source_gamma",
+        "method",
+        "normalized_performance",
+    }
 
-    if perf.empty:
-        raise ValueError(
-            "No matching performance rows found. "
-            "Please make sure Garnet_exp2.csv contains "
-            "Similarity-aware and Uniform."
-        )
+    missing_cols = required_cols - set(df.columns)
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+
+    # Keep only performance rows.
+    perf = df[df["method"].isin(METHOD_ORDER)].copy()
+    perf = perf.dropna(subset=["bad_source_gamma", "normalized_performance"])
 
     x = np.sort(perf["bad_source_gamma"].unique().astype(float))
     num_settings = len(x)
@@ -105,16 +239,22 @@ def main():
             100.0
             * perf[
                 (perf["method"] == "Similarity-aware")
-                & (perf["bad_source_gamma"] == bad_gamma)
-            ]["normalized_performance"].to_numpy()
+                & np.isclose(
+                    perf["bad_source_gamma"].astype(float),
+                    float(bad_gamma),
+                )
+            ]["normalized_performance"].to_numpy(dtype=float)
         )
 
         uni_values.append(
             100.0
             * perf[
                 (perf["method"] == "Uniform")
-                & (perf["bad_source_gamma"] == bad_gamma)
-            ]["normalized_performance"].to_numpy()
+                & np.isclose(
+                    perf["bad_source_gamma"].astype(float),
+                    float(bad_gamma),
+                )
+            ]["normalized_performance"].to_numpy(dtype=float)
         )
 
     # -----------------------------
@@ -151,6 +291,7 @@ def main():
 
     ax.set_xticks(base_positions)
     ax.set_xticklabels([f"{g:.1f}" for g in x])
+
     ax.set_xlabel(r"$\Gamma_b$")
     ax.set_ylabel(r"$\nu(T)$ (%)")
 
@@ -174,45 +315,27 @@ def main():
 
     ax.legend(handles=legend_handles, loc="lower left")
 
+    # -----------------------------
+    # Make y-axis range taller
+    # -----------------------------
+    ymin, ymax = ax.get_ylim()
+    yrange = ymax - ymin
+
+    ax.set_ylim(
+        max(0.0, ymin - 0.50 * yrange),
+        ymax,
+    )
+
     set_integer_yticks_keep_limits(ax)
 
     # -----------------------------
-    # Inset: deterministic similarity-aware bad-source weight
+    # Inset: similarity-aware bad-source weight
     # -----------------------------
-    metadata = df[df["method"] == "metadata"].copy()
+    sim_bad_weight = get_similarity_bad_source_weights(df, x)
 
-    good_gammas = (
-        metadata[metadata["source_type"] == "good"]
-        .drop_duplicates("source_index")
-        .sort_values("source_index")["prescribed_source_gamma"]
-        .to_numpy()
-    )
-
-    if good_gammas.size == 0:
-        raise ValueError(
-            "Could not recover good-source gammas from metadata rows."
-        )
-
-    sim_bad_weight = []
-
-    for bad_gamma in x:
-        prescribed_gammas = np.concatenate(
-            [good_gammas, np.array([bad_gamma])]
-        )
-
-        w_sim = similarity_weights(
-            prescribed_gammas,
-            eps=1e-6,
-            power=1.0,
-        )
-
-        sim_bad_weight.append(w_sim[-1])
-
-    sim_bad_weight = np.asarray(sim_bad_weight)
-
-    # Smaller inset placed in the lower-middle/right blank region.
     # Format: [left, bottom, width, height] in axes coordinates.
-    axins = ax.inset_axes([0.54, 0.17, 0.22, 0.18])
+    # Change this line to move or resize the weight inset.
+    axins = ax.inset_axes([0.60, 0.17, 0.22, 0.18])
 
     axins.plot(
         x,
@@ -235,15 +358,23 @@ def main():
 
     fig.tight_layout()
 
-    figure_pdf_path = figure_dir / "Garnet_exp2.pdf"
-    figure_png_path = figure_dir / "Garnet_exp2.png"
+    figure_pdf_path = FIGURE_DIR / "Garnet_exp2.pdf"
+    figure_png_path = FIGURE_DIR / "Garnet_exp2.png"
 
     fig.savefig(figure_pdf_path)
     fig.savefig(figure_png_path, dpi=300)
 
-    print("Garnet Experiment 2 figure regenerated from saved results.")
-    print(f"Read results from: {result_path}")
-    print(f"Saved figure to: {figure_pdf_path}")
+    print("Garnet Exp2 plot regenerated from saved results.")
+    print(f"Loaded results from: {RESULT_PATH}")
+    print(f"PDF saved to: {figure_pdf_path}")
+    print(f"PNG saved to: {figure_png_path}")
+
+    for bad_gamma, sim_data, uni_data in zip(x, sim_values, uni_values):
+        print(
+            f"Gamma_b={bad_gamma:.1f}: "
+            f"Similarity-aware n={len(sim_data)}, "
+            f"Uniform n={len(uni_data)}"
+        )
 
 
 if __name__ == "__main__":

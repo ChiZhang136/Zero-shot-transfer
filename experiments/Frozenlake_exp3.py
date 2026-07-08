@@ -18,8 +18,8 @@ except ImportError:
 # -----------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-RESULT_DIR = PROJECT_ROOT / "results" / "Frozenlake_exp1"
-FIGURE_DIR = PROJECT_ROOT / "figures" / "Frozenlake_exp1"
+RESULT_DIR = PROJECT_ROOT / "results" / "Frozenlake_exp3"
+FIGURE_DIR = PROJECT_ROOT / "figures" / "Frozenlake_exp3"
 
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
 FIGURE_DIR.mkdir(parents=True, exist_ok=True)
@@ -31,14 +31,11 @@ FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 MAP_NAME = "8x8"
 IS_SLIPPERY = True
 
+# Same main learning parameters as Frozenlake_exp1.
 ITERATIONS = 500
-EVAL_EVERY = 5
-
 DISCOUNT = 0.99
 
-# Four source-domain perturbation magnitudes.
-# The target FrozenLake domain is fixed, while source perturbation
-# realizations are regenerated across runs.
+# Same heterogeneous source configuration as Frozenlake_exp1.
 PERTURB_EPS_LIST = np.array([0.010, 0.015, 0.020, 0.030])
 
 # Multiple random source perturbation seeds under the same fixed target domain.
@@ -48,12 +45,8 @@ NUM_RUNS = 10
 # Run-specific seed is SOURCE_DOMAIN_BASE_SEED + run_id.
 SOURCE_DOMAIN_BASE_SEED = 2026
 
-# Exact model-based Bellman iteration.
+# Same learning and synchronization parameters as Frozenlake_exp1.
 STEPSIZE = 0.5
-
-# Aggregation happens every SYNC_PERIOD local updates.
-# SYNC_PERIOD = 1 means aggregate every iteration.
-# Larger values reduce communication/synchronization frequency.
 SYNC_PERIOD = 5
 
 SIMILARITY_POWER = 1.0
@@ -62,33 +55,49 @@ SIMILARITY_EPS = 1e-6
 # Progress bar update frequency.
 PROGRESS_UPDATE_EVERY = 10
 
+# Magnitude of zero-mean noise added to local Bellman backups.
+# This is Bellman-target noise, not aggregation-observation noise.
+NOISE_LEVELS = np.array([0.000, 0.002, 0.004, 0.006, 0.008])
+
+# Keep this alias so old plotting/CSV naming remains familiar.
+BIAS_LEVELS = NOISE_LEVELS
+
+# Bellman backup noise is Uniform[-1, 1].
+NOISE_LOW = -1.0
+NOISE_HIGH = 1.0
+
+# Base seed for Bellman-noise realizations.
+BELLMAN_NOISE_BASE_SEED = 3000
+
 
 # -----------------------------
 # Plot style
 # -----------------------------
 FIGSIZE = (6.5, 4.2)
+
 LINE_WIDTH = 2.0
+MARKER_SIZE = 4.5
 SHADE_ALPHA = 0.15
 GRID_ALPHA = 0.25
+
+MAX_COLOR = "C2"
+SIM_COLOR = "C0"
 
 METHOD_ORDER = [
     "Maximum-based",
     "Similarity-aware",
-    "Uniform",
 ]
 
 PLOT_STYLES = {
     "Maximum-based": {
-        "color": "C2",
+        "color": MAX_COLOR,
         "linestyle": "-",
+        "marker": "s",
     },
     "Similarity-aware": {
-        "color": "C0",
+        "color": SIM_COLOR,
         "linestyle": "-",
-    },
-    "Uniform": {
-        "color": "C1",
-        "linestyle": "-",
+        "marker": "o",
     },
 }
 
@@ -97,6 +106,18 @@ def set_clean_yticks_keep_limits(ax, nbins=6):
     ymin, ymax = ax.get_ylim()
     ax.yaxis.set_major_locator(MaxNLocator(nbins=nbins))
     ax.set_ylim(ymin, ymax)
+
+
+def mean_and_sem(x, axis=0):
+    x = np.asarray(x, dtype=float)
+    mean = np.mean(x, axis=axis)
+
+    if x.shape[axis] <= 1:
+        sem = np.zeros_like(mean)
+    else:
+        sem = np.std(x, axis=axis, ddof=1) / np.sqrt(x.shape[axis])
+
+    return mean, sem
 
 
 # -----------------------------
@@ -267,18 +288,11 @@ def similarity_weights(discrepancies, eps=1e-6, power=1.0):
     return scores / np.sum(scores)
 
 
-def uniform_weights(num_sources):
-    return np.ones(num_sources, dtype=float) / num_sources
-
-
 def aggregate_q_tables(Q_tables, method, weights=None):
     Q_stack = np.asarray(Q_tables)
 
     if method == "Maximum-based":
         return np.max(Q_stack, axis=0)
-
-    if method == "Uniform":
-        return np.mean(Q_stack, axis=0)
 
     if method == "Similarity-aware":
         if weights is None:
@@ -289,36 +303,30 @@ def aggregate_q_tables(Q_tables, method, weights=None):
 
 
 # -----------------------------
-# Robust Bellman update
+# Robust Bellman backup
 # -----------------------------
-def robust_bellman_update_gym(
+def robust_bellman_backup_gym(
     Q,
     P_source,
     local_l1_radius,
     n_states,
     n_actions,
     discount,
-    stepsize,
 ):
     """
-    Robust Bellman update.
-
-        V(s) = max_a Q(s,a)
-        kappa(V) = (max_s V(s) - min_s V(s)) / 2
+    Exact robust Bellman backup:
 
         TQ(s,a)
         =
-        sum_{s'} P_k(s'|s,a) [r + gamma V(s')]
-        - gamma * R_k(s,a) * kappa(V)
+        sum_{s'} P_k(s'|s,a) [r + gamma max_a' Q(s',a')]
+        - gamma * R_k(s,a) * kappa(V).
 
-    where
-
-        R_k(s,a) = ||P_k(.|s,a) - P_0(.|s,a)||_1.
+    The model-free-style noise is added outside this function.
     """
     V = np.max(Q, axis=1)
     kappa = 0.5 * (np.max(V) - np.min(V))
 
-    Q_backup = np.zeros_like(Q)
+    TQ = np.zeros_like(Q)
 
     for s in range(n_states):
         for a in range(n_actions):
@@ -332,9 +340,9 @@ def robust_bellman_update_gym(
             penalty = discount * local_l1_radius[s, a] * kappa
             q_value -= penalty
 
-            Q_backup[s, a] = q_value
+            TQ[s, a] = q_value
 
-    return (1.0 - stepsize) * Q + stepsize * Q_backup
+    return TQ
 
 
 # -----------------------------
@@ -347,7 +355,7 @@ def greedy_policy(Q):
 def evaluate_policy_exact(P_arr, R_arr, policy, discount, start_state=0):
     """
     Exact expected discounted return of a deterministic policy on the fixed
-    target MDP.
+    target MDP:
 
         V^pi = (I - gamma P_pi)^(-1) r_pi.
     """
@@ -366,7 +374,7 @@ def evaluate_policy_exact(P_arr, R_arr, policy, discount, start_state=0):
 
 def target_value_iteration(P_arr, R_arr, discount, tol=1e-12, max_iter=10000):
     """
-    Compute the target optimal Q function for oracle normalization/diagnostics.
+    Compute the target optimal Q function for oracle diagnostics.
     """
     n_states, n_actions, _ = P_arr.shape
 
@@ -386,152 +394,117 @@ def target_value_iteration(P_arr, R_arr, discount, tol=1e-12, max_iter=10000):
 
 
 # -----------------------------
-# Training
+# Model-free-style Bellman-noise learning
 # -----------------------------
-def train_once(
-    run_id,
+def run_learning_with_noisy_bellman_backups(
     P_sources,
     local_l1_radii,
-    empirical_gammas,
-    P_true_arr,
-    R_true_arr,
-    oracle_policy,
-    oracle_performance,
+    bellman_noise,
+    noise_level,
+    weights,
+    method,
+    discount,
+    total_iterations,
+    stepsize,
+    sync_period,
     n_states,
     n_actions,
     pbar=None,
     progress_update_every=10,
 ):
     """
-    Train all methods with one random source-domain perturbation realization
-    and exact target evaluation.
+    Multi-source robust learning with model-free-style local Bellman noise.
+
+    We add zero-mean noise to the local Bellman backups:
+
+        T_hat_k Q_k = T_k Q_k + delta * xi_k,
+
+    and then update:
+
+        Q_k <- (1 - eta) Q_k + eta * T_hat_k Q_k.
+
+    Synchronization uses clean local Q-tables directly:
+
+        Q_agg = Agg(Q_1, ..., Q_K).
+
+    No extra noisy observation is used at aggregation or final output.
     """
-    num_sources = len(P_sources)
+    K = len(P_sources)
 
-    w_uniform = uniform_weights(num_sources)
-    w_similarity = similarity_weights(
-        empirical_gammas,
-        eps=SIMILARITY_EPS,
-        power=SIMILARITY_POWER,
-    )
+    if bellman_noise.shape != (total_iterations, K, n_states, n_actions):
+        raise ValueError(
+            "bellman_noise must have shape "
+            "(total_iterations, K, n_states, n_actions)."
+        )
 
-    method_weight_map = {
-        "Maximum-based": None,
-        "Similarity-aware": w_similarity,
-        "Uniform": w_uniform,
-    }
+    if method == "Similarity-aware":
+        if weights is None:
+            raise ValueError("weights must be provided for Similarity-aware.")
+    elif method == "Maximum-based":
+        weights = None
+    else:
+        raise ValueError(f"Unknown method: {method}")
 
-    results = {}
+    Q_locals = np.zeros((K, n_states, n_actions), dtype=float)
 
     pending_progress_updates = 0
 
-    for method_name in METHOD_ORDER:
-        Q_tables = [
-            np.zeros((n_states, n_actions), dtype=float)
-            for _ in range(num_sources)
-        ]
+    for t in range(total_iterations):
+        # -----------------------------
+        # Local stochastic Bellman updates
+        # -----------------------------
+        for k in range(K):
+            TQ = robust_bellman_backup_gym(
+                Q=Q_locals[k],
+                P_source=P_sources[k],
+                local_l1_radius=local_l1_radii[k],
+                n_states=n_states,
+                n_actions=n_actions,
+                discount=discount,
+            )
 
-        iterations = []
-        target_performances = []
-        normalized_performances = []
-        policy_error_rates = []
+            TQ_noisy = TQ + noise_level * bellman_noise[t, k]
 
-        for iteration in range(ITERATIONS + 1):
-            if iteration % EVAL_EVERY == 0:
-                Q_shared = aggregate_q_tables(
-                    Q_tables,
-                    method=method_name,
-                    weights=method_weight_map[method_name],
-                )
+            Q_locals[k] = (
+                (1.0 - stepsize) * Q_locals[k]
+                + stepsize * TQ_noisy
+            )
 
-                policy = greedy_policy(Q_shared)
+        # -----------------------------
+        # Clean aggregation / synchronization
+        # -----------------------------
+        if (t + 1) % sync_period == 0:
+            Q_agg = aggregate_q_tables(
+                Q_locals,
+                method=method,
+                weights=weights,
+            )
 
-                _, perf = evaluate_policy_exact(
-                    P_arr=P_true_arr,
-                    R_arr=R_true_arr,
-                    policy=policy,
-                    discount=DISCOUNT,
-                    start_state=0,
-                )
+            Q_locals[:] = Q_agg[None, :, :]
 
-                iterations.append(iteration)
-                target_performances.append(perf)
-                normalized_performances.append(perf / oracle_performance)
-                policy_error_rates.append(float(np.mean(policy != oracle_policy)))
+        # -----------------------------
+        # Progress bar update
+        # -----------------------------
+        pending_progress_updates += 1
 
-            if iteration == ITERATIONS:
-                break
-
-            new_q_tables = []
-
-            for k in range(num_sources):
-                Q_new = robust_bellman_update_gym(
-                    Q=Q_tables[k],
-                    P_source=P_sources[k],
-                    local_l1_radius=local_l1_radii[k],
-                    n_states=n_states,
-                    n_actions=n_actions,
-                    discount=DISCOUNT,
-                    stepsize=STEPSIZE,
-                )
-
-                new_q_tables.append(Q_new)
-
-            # Synchronize only every SYNC_PERIOD local updates.
-            # iteration starts from 0, so the first update corresponds to iteration + 1.
-            if (iteration + 1) % SYNC_PERIOD == 0:
-                Q_shared = aggregate_q_tables(
-                    new_q_tables,
-                    method=method_name,
-                    weights=method_weight_map[method_name],
-                )
-
-                Q_tables = [
-                    copy.deepcopy(Q_shared)
-                    for _ in range(num_sources)
-                ]
-            else:
-                Q_tables = new_q_tables
-
-            pending_progress_updates += 1
-
-            if (
-                pbar is not None
-                and pending_progress_updates >= progress_update_every
-            ):
-                pbar.update(pending_progress_updates)
-                pending_progress_updates = 0
-
-        results[method_name] = {
-            "iterations": np.asarray(iterations),
-            "target_performance": np.asarray(target_performances),
-            "normalized_performance": np.asarray(normalized_performances),
-            "policy_error_rate": np.asarray(policy_error_rates),
-        }
+        if (
+            pbar is not None
+            and pending_progress_updates >= progress_update_every
+        ):
+            pbar.update(pending_progress_updates)
+            pending_progress_updates = 0
 
     if pbar is not None and pending_progress_updates > 0:
         pbar.update(pending_progress_updates)
 
-    metadata = {
-        "empirical_gammas": empirical_gammas,
-        "uniform_weights": w_uniform,
-        "similarity_weights": w_similarity,
-        "oracle_performance": oracle_performance,
-    }
+    # Final aggregation uses clean local Q-tables.
+    Q_final = aggregate_q_tables(
+        Q_locals,
+        method=method,
+        weights=weights,
+    )
 
-    return results, metadata
-
-
-def mean_and_sem(x, axis=0):
-    x = np.asarray(x, dtype=float)
-    mean = np.mean(x, axis=axis)
-
-    if x.shape[axis] <= 1:
-        sem = np.zeros_like(mean)
-    else:
-        sem = np.std(x, axis=axis, ddof=1) / np.sqrt(x.shape[axis])
-
-    return mean, sem
+    return Q_final
 
 
 # -----------------------------
@@ -571,28 +544,39 @@ def main():
         start_state=0,
     )
 
-    print("FrozenLake Experiment 1: fixed target + random source perturbation seeds")
+    print("FrozenLake Experiment 3: fixed target + random source seeds + Bellman noise")
     print("Map:", MAP_NAME)
     print("Is slippery:", IS_SLIPPERY)
     print("Perturb eps:", PERTURB_EPS_LIST)
     print("Number of source perturbation seeds:", NUM_RUNS)
     print("Source domain base seed:", SOURCE_DOMAIN_BASE_SEED)
+    print("Bellman noise base seed:", BELLMAN_NOISE_BASE_SEED)
     print("Target oracle performance:", oracle_performance)
     print("Synchronization period:", SYNC_PERIOD)
+    print("Stepsize:", STEPSIZE)
+    print("Noise location: Bellman backup only")
 
     all_rows = []
-    all_curves = {
-        method: []
+
+    final_perf_by_method = {
+        method: {float(delta): [] for delta in NOISE_LEVELS}
         for method in METHOD_ORDER
     }
 
-    saved_iterations = None
+    total_training_steps = (
+        NUM_RUNS
+        * len(NOISE_LEVELS)
+        * len(METHOD_ORDER)
+        * ITERATIONS
+    )
 
-    total_steps = NUM_RUNS * len(METHOD_ORDER) * ITERATIONS
-
-    with tqdm(total=total_steps, desc="FrozenLake Exp1 training iterations") as pbar:
+    with tqdm(
+        total=total_training_steps,
+        desc="FrozenLake Exp3 Bellman-noise iterations",
+    ) as pbar:
         for run_id in range(NUM_RUNS):
             source_seed = SOURCE_DOMAIN_BASE_SEED + run_id
+            bellman_noise_seed = BELLMAN_NOISE_BASE_SEED + run_id
 
             (
                 P_sources,
@@ -607,113 +591,193 @@ def main():
                 seed=source_seed,
             )
 
-            run_curves, metadata = train_once(
-                run_id=run_id,
-                P_sources=P_sources,
-                local_l1_radii=local_l1_radii,
-                empirical_gammas=empirical_gammas,
-                P_true_arr=P_true_arr,
-                R_true_arr=R_true_arr,
-                oracle_policy=oracle_policy,
-                oracle_performance=oracle_performance,
-                n_states=n_states,
-                n_actions=n_actions,
-                pbar=pbar,
-                progress_update_every=PROGRESS_UPDATE_EVERY,
+            w_sim = similarity_weights(
+                empirical_gammas,
+                eps=SIMILARITY_EPS,
+                power=SIMILARITY_POWER,
             )
 
-            for method_name in METHOD_ORDER:
-                curve = run_curves[method_name]
+            K = len(P_sources)
 
-                iterations = curve["iterations"]
-                saved_iterations = iterations
+            rng = np.random.default_rng(bellman_noise_seed)
 
-                target_perf = curve["target_performance"]
-                normalized_perf = curve["normalized_performance"]
-                policy_error_rate = curve["policy_error_rate"]
+            # Base zero-mean Bellman backup noise for this run.
+            # Reused for all noise levels and both methods.
+            base_bellman_noise = rng.uniform(
+                low=NOISE_LOW,
+                high=NOISE_HIGH,
+                size=(ITERATIONS, K, n_states, n_actions),
+            )
 
-                # Important:
-                # plot normalized target performance instead of raw target value.
-                all_curves[method_name].append(normalized_perf)
+            for delta in NOISE_LEVELS:
+                delta = float(delta)
 
-                for i, t in enumerate(iterations):
+                for method_name in METHOD_ORDER:
+                    pbar.set_postfix(
+                        run=run_id,
+                        delta=f"{delta:.3f}",
+                        method=method_name,
+                    )
+
+                    if method_name == "Similarity-aware":
+                        weights = w_sim
+                    else:
+                        weights = None
+
+                    Q_final = run_learning_with_noisy_bellman_backups(
+                        P_sources=P_sources,
+                        local_l1_radii=local_l1_radii,
+                        bellman_noise=base_bellman_noise,
+                        noise_level=delta,
+                        weights=weights,
+                        method=method_name,
+                        discount=DISCOUNT,
+                        total_iterations=ITERATIONS,
+                        stepsize=STEPSIZE,
+                        sync_period=SYNC_PERIOD,
+                        n_states=n_states,
+                        n_actions=n_actions,
+                        pbar=pbar,
+                        progress_update_every=PROGRESS_UPDATE_EVERY,
+                    )
+
+                    policy = greedy_policy(Q_final)
+
+                    _, target_perf = evaluate_policy_exact(
+                        P_arr=P_true_arr,
+                        R_arr=R_true_arr,
+                        policy=policy,
+                        discount=DISCOUNT,
+                        start_state=0,
+                    )
+
+                    normalized_perf = target_perf / oracle_performance
+                    policy_error_rate = float(np.mean(policy != oracle_policy))
+
+                    final_perf_by_method[method_name][delta].append(
+                        normalized_perf
+                    )
+
                     all_rows.append(
                         {
                             "run_id": run_id,
                             "source_domain_seed": int(source_seed),
-                            "iteration": int(t),
+                            "bellman_noise_seed": int(bellman_noise_seed),
+                            "bias_level": delta,
+                            "noise_level": delta,
+                            "bellman_noise_level": delta,
                             "method": method_name,
-                            "target_performance": float(target_perf[i]),
-                            "normalized_performance": float(normalized_perf[i]),
-                            "policy_error_rate": float(policy_error_rate[i]),
+                            "target_performance": float(target_perf),
+                            "normalized_performance": float(normalized_perf),
                             "oracle_performance": float(oracle_performance),
+                            "policy_error_rate": float(policy_error_rate),
                             "map_name": MAP_NAME,
                             "discount": float(DISCOUNT),
                             "stepsize": float(STEPSIZE),
                             "sync_period": int(SYNC_PERIOD),
+                            "iterations": int(ITERATIONS),
+                            "source_domain_base_seed": int(
+                                SOURCE_DOMAIN_BASE_SEED
+                            ),
+                            "bellman_noise_base_seed": int(
+                                BELLMAN_NOISE_BASE_SEED
+                            ),
+                            "aggregation_noise_seed": -1,
                             "evaluation_type": "exact",
                             "target_domain": "fixed",
                             "source_randomness": "perturbation_seed",
+                            "noise_location": "bellman_backup_only",
                         }
                     )
 
-            # Save source metadata for this run.
-            for k, eps in enumerate(PERTURB_EPS_LIST):
+            # Save source metadata for inspection.
+            for k in range(K):
                 all_rows.append(
                     {
                         "run_id": run_id,
                         "source_domain_seed": int(source_seed),
-                        "iteration": -1,
-                        "method": "source_metadata",
+                        "bellman_noise_seed": int(bellman_noise_seed),
+                        "bias_level": -1,
+                        "noise_level": -1,
+                        "bellman_noise_level": -1,
+                        "method": "metadata",
                         "source_index": k,
-                        "perturb_epsilon": float(eps),
+                        "perturb_epsilon": float(PERTURB_EPS_LIST[k]),
                         "empirical_gamma_l1": float(empirical_gammas[k]),
                         "mean_local_l1_radius": float(mean_local_radii[k]),
-                        "uniform_weight": float(metadata["uniform_weights"][k]),
-                        "similarity_weight": float(
-                            metadata["similarity_weights"][k]
-                        ),
-                        "oracle_performance": float(oracle_performance),
+                        "similarity_weight": float(w_sim[k]),
                         "map_name": MAP_NAME,
                         "discount": float(DISCOUNT),
                         "stepsize": float(STEPSIZE),
                         "sync_period": int(SYNC_PERIOD),
+                        "iterations": int(ITERATIONS),
+                        "source_domain_base_seed": int(
+                            SOURCE_DOMAIN_BASE_SEED
+                        ),
+                        "bellman_noise_base_seed": int(
+                            BELLMAN_NOISE_BASE_SEED
+                        ),
+                        "aggregation_noise_seed": -1,
                         "evaluation_type": "exact",
                         "target_domain": "fixed",
                         "source_randomness": "perturbation_seed",
+                        "noise_location": "bellman_backup_only",
                     }
                 )
 
+    # -----------------------------
+    # Save raw results
+    # -----------------------------
     df = pd.DataFrame(all_rows)
-
-    csv_path = RESULT_DIR / "Frozenlake_exp1_results.csv"
-    df.to_csv(csv_path, index=False)
+    result_path = RESULT_DIR / "Frozenlake_exp3.csv"
+    df.to_csv(result_path, index=False)
 
     # -----------------------------
-    # Plot: normalized target performance mean ± SEM
+    # Aggregate curves
+    # -----------------------------
+    curve_stats = {}
+
+    for method_name in METHOD_ORDER:
+        curves = []
+
+        for delta in NOISE_LEVELS:
+            values = final_perf_by_method[method_name][float(delta)]
+            curves.append(values)
+
+        curves = np.asarray(curves).T  # shape: (NUM_RUNS, num_noise_levels)
+        mean_curve, sem_curve = mean_and_sem(curves, axis=0)
+
+        curve_stats[method_name] = {
+            "mean": mean_curve,
+            "sem": sem_curve,
+        }
+
+    # -----------------------------
+    # Plot normalized target performance
     # -----------------------------
     fig, ax = plt.subplots(figsize=FIGSIZE)
 
     for method_name in METHOD_ORDER:
-        curves = np.asarray(all_curves[method_name])
-        mean_curve, sem_curve = mean_and_sem(curves, axis=0)
-
-        mean_curve = 100.0 * mean_curve
-        sem_curve = 100.0 * sem_curve
-
         style = PLOT_STYLES[method_name]
 
+        mean_curve = 100.0 * curve_stats[method_name]["mean"]
+        sem_curve = 100.0 * curve_stats[method_name]["sem"]
+
         ax.plot(
-            saved_iterations,
+            NOISE_LEVELS,
             mean_curve,
             color=style["color"],
             linestyle=style["linestyle"],
+            marker=style["marker"],
+            markerfacecolor=style["color"],
+            markeredgecolor=style["color"],
+            markersize=MARKER_SIZE,
             linewidth=LINE_WIDTH,
             label=method_name,
         )
 
         ax.fill_between(
-            saved_iterations,
+            NOISE_LEVELS,
             mean_curve - sem_curve,
             mean_curve + sem_curve,
             color=style["color"],
@@ -721,30 +785,42 @@ def main():
             linewidth=0.0,
         )
 
-    ax.set_xlabel(r"$t$")
-    ax.set_ylabel(r"$\nu(t)$ (%)")
+    ax.set_xlabel(r"$\delta$")
+    ax.set_ylabel(r"$\nu(T)$ (%)")
+
+    ax.set_xticks(NOISE_LEVELS)
+    ax.set_xticklabels([f"{d:.3f}" for d in NOISE_LEVELS])
 
     ax.set_axisbelow(True)
     ax.grid(True, which="major", axis="both", alpha=GRID_ALPHA)
 
-    ax.legend(loc="lower right")
+    ax.legend(loc="lower left")
 
+    # -----------------------------
+    # Make y-axis range taller
+    # -----------------------------
     ymin, ymax = ax.get_ylim()
-    ax.set_ylim(max(0.0, ymin), ymax)
+    yrange = ymax - ymin
+
+    ax.set_ylim(
+        max(0.0, ymin),
+        max(ymax + 0.05 * yrange, 100.0 + 0.02 * yrange),
+    )
+
     set_clean_yticks_keep_limits(ax, nbins=6)
 
     fig.tight_layout()
 
-    pdf_path = FIGURE_DIR / "Frozenlake_exp1.pdf"
-    png_path = FIGURE_DIR / "Frozenlake_exp1.png"
+    figure_pdf_path = FIGURE_DIR / "Frozenlake_exp3.pdf"
+    figure_png_path = FIGURE_DIR / "Frozenlake_exp3.png"
 
-    fig.savefig(pdf_path)
-    fig.savefig(png_path, dpi=300)
+    fig.savefig(figure_pdf_path)
+    fig.savefig(figure_png_path, dpi=300)
 
-    print("FrozenLake Experiment 1 finished.")
-    print(f"CSV saved to: {csv_path}")
-    print(f"PDF saved to: {pdf_path}")
-    print(f"PNG saved to: {png_path}")
+    print("FrozenLake Experiment 3 finished.")
+    print(f"Results saved to: {result_path}")
+    print(f"Figure saved to: {figure_pdf_path}")
+    print(f"PNG saved to: {figure_png_path}")
 
 
 if __name__ == "__main__":

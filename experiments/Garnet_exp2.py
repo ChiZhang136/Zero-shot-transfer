@@ -84,6 +84,43 @@ def style_boxplot(boxplot_dict, color):
         flier.set_markersize(5)
 
 
+def compute_local_transition_discrepancies(P_sources, P0, p_norm=1):
+    """
+    Compute state-action-wise transition discrepancies:
+
+        R_k(s,a) = || P_k(.|s,a) - P_0(.|s,a) ||_p.
+
+    Parameters
+    ----------
+    P_sources : np.ndarray
+        Shape: (K, S, A, S)
+    P0 : np.ndarray
+        Shape: (S, A, S)
+    p_norm : int, float, or str
+        Norm used over next-state distributions.
+
+    Returns
+    -------
+    local_gammas : np.ndarray
+        Shape: (K, S, A)
+    """
+    P_sources = np.asarray(P_sources, dtype=float)
+    P0 = np.asarray(P0, dtype=float)
+
+    diff = P_sources - P0[None, :, :, :]
+
+    if p_norm == 1:
+        local_gammas = np.sum(np.abs(diff), axis=-1)
+    elif p_norm == 2:
+        local_gammas = np.sqrt(np.sum(diff ** 2, axis=-1))
+    elif p_norm == np.inf or p_norm == "inf":
+        local_gammas = np.max(np.abs(diff), axis=-1)
+    else:
+        local_gammas = np.linalg.norm(diff, ord=p_norm, axis=-1)
+
+    return local_gammas
+
+
 def construct_source_with_prescribed_gamma(
     P0,
     P_candidate,
@@ -204,7 +241,7 @@ def main():
     discount = 0.95
 
     # Robust geometry:
-    # p_norm = 1 means Gamma_k is computed by L1 transition distance.
+    # p_norm = 1 means local R_k(s,a) is computed by L1 transition distance.
     # robust_q = "inf" means kappa_q(V) = (max V - min V) / 2.
     p_norm = 1
     robust_q = "inf"
@@ -316,8 +353,22 @@ def main():
             K = len(source_gammas)
 
             # -----------------------------
+            # State-action-wise local radii
+            # -----------------------------
+            local_source_gammas = compute_local_transition_discrepancies(
+                P_sources=P_sources,
+                P0=P0,
+                p_norm=p_norm,
+            )
+
+            local_gamma_max = np.max(local_source_gammas, axis=(1, 2))
+            local_gamma_mean = np.mean(local_source_gammas, axis=(1, 2))
+
+            # -----------------------------
             # Weights
             # -----------------------------
+            # Keep source-level prescribed Gamma for aggregation weights.
+            # Use local R_k(s,a) only for robust Bellman penalties.
             w_uni = uniform_weights(K)
             w_sim = similarity_weights(source_gammas, eps=1e-6, power=1.0)
 
@@ -327,7 +378,9 @@ def main():
             Q_uni, _ = run_periodic_learning(
                 P_sources=P_sources,
                 rewards=rewards,
-                gammas=source_gammas,
+                # Important change:
+                # use local R_k(s,a), shape (K, S, A), instead of scalar Gamma_k.
+                gammas=local_source_gammas,
                 weights=w_uni,
                 discount=discount,
                 target_P=None,
@@ -354,7 +407,9 @@ def main():
             Q_sim, _ = run_periodic_learning(
                 P_sources=P_sources,
                 rewards=rewards,
-                gammas=source_gammas,
+                # Important change:
+                # use local R_k(s,a), shape (K, S, A), instead of scalar Gamma_k.
+                gammas=local_source_gammas,
                 weights=w_sim,
                 discount=discount,
                 target_P=None,
@@ -395,6 +450,13 @@ def main():
                     "bad_source_nominal_transfer_performance": float(
                         bad_source_nominal_transfer_perf
                     ),
+                    "bad_source_local_gamma_max": float(local_gamma_max[-1]),
+                    "bad_source_local_gamma_mean": float(local_gamma_mean[-1]),
+                    "penalty_type": "state_action_local",
+                    "p_norm": str(p_norm),
+                    "robust_q": robust_q,
+                    "sync_period": int(sync_period),
+                    "stepsize": float(stepsize),
                 }
             )
 
@@ -412,6 +474,13 @@ def main():
                     "bad_source_nominal_transfer_performance": float(
                         bad_source_nominal_transfer_perf
                     ),
+                    "bad_source_local_gamma_max": float(local_gamma_max[-1]),
+                    "bad_source_local_gamma_mean": float(local_gamma_mean[-1]),
+                    "penalty_type": "state_action_local",
+                    "p_norm": str(p_norm),
+                    "robust_q": robust_q,
+                    "sync_period": int(sync_period),
+                    "stepsize": float(stepsize),
                 }
             )
 
@@ -426,8 +495,15 @@ def main():
                         "source_type": source_type,
                         "prescribed_source_gamma": float(source_gammas[k]),
                         "actual_source_gamma": float(actual_source_gammas[k]),
+                        "local_gamma_max": float(local_gamma_max[k]),
+                        "local_gamma_mean": float(local_gamma_mean[k]),
                         "uniform_weight": float(w_uni[k]),
                         "similarity_weight": float(w_sim[k]),
+                        "penalty_type": "state_action_local",
+                        "p_norm": str(p_norm),
+                        "robust_q": robust_q,
+                        "sync_period": int(sync_period),
+                        "stepsize": float(stepsize),
                     }
                 )
 
@@ -524,6 +600,17 @@ def main():
 
     ax.legend(handles=legend_handles, loc="lower left")
 
+    # -----------------------------
+    # Make y-axis range taller
+    # -----------------------------
+    ymin, ymax = ax.get_ylim()
+    yrange = ymax - ymin
+
+    ax.set_ylim(
+        max(0.0, ymin - 0.50 * yrange),
+        ymax,
+    )
+
     set_integer_yticks_keep_limits(ax)
 
     # -----------------------------
@@ -546,7 +633,7 @@ def main():
 
     sim_bad_weight = np.asarray(sim_bad_weight)
 
-    axins = ax.inset_axes([0.54, 0.17, 0.22, 0.18])
+    axins = ax.inset_axes([0.60, 0.17, 0.22, 0.18])
 
     axins.plot(
         x,
@@ -576,6 +663,7 @@ def main():
     fig.savefig(figure_png_path, dpi=300)
 
     print("Garnet Experiment 2 finished.")
+    print("Penalty type: state-action local radii R_k(s,a)")
     print(f"Results saved to: {result_path}")
     print(f"Figure saved to: {figure_pdf_path}")
 
