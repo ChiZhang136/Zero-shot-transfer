@@ -21,7 +21,7 @@ METHOD_ORDER = [
     "Maximum-based",
     "Similarity-aware",
     "Uniform",
-    "Non-robust DR",
+    # "Non-robust DR",  # Temporarily disabled.
 ]
 
 PLOT_STYLES = {
@@ -45,6 +45,9 @@ def compute_local_transition_discrepancies(P_sources, P0, p_norm=1):
     if p_norm == np.inf or p_norm == "inf":
         return np.max(np.abs(diff), axis=-1)
     return np.linalg.norm(diff, ord=p_norm, axis=-1)
+
+
+
 
 
 def set_integer_yticks_keep_limits(ax):
@@ -111,6 +114,8 @@ def main():
             p_norm=p_norm,
         )
 
+
+
         rewards = target_mdp.rewards
         P0 = target_mdp.transitions
 
@@ -124,11 +129,11 @@ def main():
 
         w_sim = similarity_weights(actual_source_gammas, eps=1e-6, power=1.0)
         w_uni = uniform_weights(num_sources)
+        max_selected_counts = np.zeros(num_sources, dtype=int)
 
         Q_star, _, _ = target_value_iteration(P0, rewards, discount)
         pi_star = greedy_policy(Q_star)
         _, oracle_perf = evaluate_policy(P0, rewards, pi_star, discount)
-
         method_configs = {
             "Maximum-based": {
                 "weights": None,
@@ -151,8 +156,6 @@ def main():
             "Non-robust DR": {
                 "weights": w_uni,
                 "aggregation_type": "weighted",
-                # A zero radius removes the robust penalty while retaining
-                # the same uniform aggregation and synchronization scheme.
                 "gammas": np.zeros_like(local_source_gammas),
                 "uses_robust_term": False,
             },
@@ -206,6 +209,13 @@ def main():
             progress.set_postfix(seed=seed, method=method_name, refresh=False)
             progress.update(1)
 
+            if method_name == "Maximum-based":
+                max_selected_counts = hist.get(
+                    "max_selection_counts", np.zeros(num_sources, dtype=int)
+                )
+
+        selected_total = max(int(np.sum(max_selected_counts)), 1)
+
         for k in range(num_sources):
             all_rows.append(
                 {
@@ -214,6 +224,8 @@ def main():
                     "method": "metadata",
                     "source_index": k,
                     "source_gamma": float(source_gammas[k]),
+                    "max_selected_count": int(max_selected_counts[k]),
+                    "max_selected_fraction": float(max_selected_counts[k] / selected_total),
                     "actual_source_gamma": float(actual_source_gammas[k]),
                     "local_gamma_max": float(local_gamma_max[k]),
                     "local_gamma_mean": float(local_gamma_mean[k]),
@@ -268,6 +280,13 @@ def main():
     ax.set_axisbelow(True)
     ax.grid(True, which="major", axis="both", alpha=0.25)
     ax.legend(loc="lower right")
+
+    # Show 100 as the highest integer tick, with roughly 5% visual
+    # headroom above it so curves near optimal performance are not cramped.
+    ymin, _ = ax.get_ylim()
+    headroom = min(0.05 * max(100.0 - ymin, 1.0), 0.95)
+    ax.set_ylim(ymin, 100.0 + headroom)
+
     set_integer_yticks_keep_limits(ax)
     fig.tight_layout()
 
@@ -278,7 +297,7 @@ def main():
     plt.close(fig)
 
     print("Garnet Experiment 1 (4 algorithms) finished.")
-    print("Non-robust DR: uniform averaging with zero robust radius.")
+    # print("Non-robust DR: uniform averaging with zero robust radius.")
     print(f"Results saved to: {result_path}")
     print(f"Figure saved to: {figure_pdf_path}")
 

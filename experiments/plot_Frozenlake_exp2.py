@@ -353,7 +353,7 @@ def main():
     weight_mean = np.asarray(weight_mean, dtype=float)
     weight_sem = np.asarray(weight_sem, dtype=float)
 
-    axins = ax.inset_axes([0.60, 0.17, 0.22, 0.18])
+    axins = ax.inset_axes([0.32, 0.30, 0.22, 0.18])
 
     axins.plot(
         gamma_tick_labels,

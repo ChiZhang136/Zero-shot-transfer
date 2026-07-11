@@ -45,6 +45,9 @@ SYNC_PERIOD = 5
 SIMILARITY_POWER = 1.0
 SIMILARITY_EPS = 1e-6
 
+UNCERTAINTY_DISTANCE = "support_restricted_tv_l1"
+ROBUST_BACKUP_TYPE = "exact_support_restricted_l1"
+
 # Bellman backup noise level used for the trajectory diagnostic.
 DIAGNOSTIC_NOISE_LEVEL = 0.008
 
@@ -173,9 +176,8 @@ def perturb_kernel(P_base, epsilon, n_states, n_actions, rng):
 
         R(s,a) = ||P_perturbed(.|s,a) - P_base(.|s,a)||_1.
 
-    This matches the penalty form:
-
-        R(s,a) * span(V) / 2.
+    This radius defines a support-restricted L1 probability ball, equivalent
+    to a total-variation ball with radius R(s,a) / 2.
     """
     P_perturbed = copy.deepcopy(P_base)
     local_l1_radii = np.zeros((n_states, n_actions), dtype=float)
@@ -275,6 +277,7 @@ def generate_sources_with_seed(
 def convert_source_dicts_to_arrays(P_sources, n_states, n_actions):
     P_arr_list = []
     R_arr_list = []
+    support_mask_list = []
 
     for P_source in P_sources:
         P_arr, R_arr = gym_transition_dict_to_arrays(
@@ -282,11 +285,24 @@ def convert_source_dicts_to_arrays(P_sources, n_states, n_actions):
             n_states=n_states,
             n_actions=n_actions,
         )
-
         P_arr_list.append(P_arr)
         R_arr_list.append(R_arr)
 
-    return np.asarray(P_arr_list), np.asarray(R_arr_list)
+        support_mask = np.zeros(
+            (n_states, n_actions, n_states),
+            dtype=bool,
+        )
+        for s in range(n_states):
+            for a in range(n_actions):
+                for _, s_next, _, _ in P_source[s][a]:
+                    support_mask[s, a, int(s_next)] = True
+        support_mask_list.append(support_mask)
+
+    return (
+        np.asarray(P_arr_list),
+        np.asarray(R_arr_list),
+        np.asarray(support_mask_list),
+    )
 
 
 # -----------------------------
@@ -343,47 +359,103 @@ def aggregate_q_trajectories(Q_locals, method, weights=None):
 # -----------------------------
 # Vectorized robust Bellman backup with Bellman noise
 # -----------------------------
+def exact_l1_worst_case_expectation_batch(
+    nominal_probs,
+    values,
+    l1_radius,
+):
+    """Exact support-restricted L1 worst-case expectations for a batch."""
+    nominal_probs = np.asarray(nominal_probs, dtype=float)
+    values = np.asarray(values, dtype=float)
+
+    if values.ndim != 2 or values.shape[1] != len(nominal_probs):
+        raise ValueError("values must have shape (B, len(nominal_probs)).")
+    if len(nominal_probs) == 0:
+        raise ValueError("At least one feasible successor is required.")
+
+    total_probability = float(np.sum(nominal_probs))
+    if total_probability <= 0.0:
+        raise ValueError("nominal_probs must have positive total mass.")
+
+    batch_size, support_size = values.shape
+    q = np.broadcast_to(
+        nominal_probs / total_probability,
+        (batch_size, support_size),
+    ).copy()
+    remaining = np.full(
+        batch_size,
+        min(max(float(l1_radius), 0.0) / 2.0, 1.0),
+    )
+
+    low_order = np.argsort(values, axis=1)
+    high_order = np.argsort(-values, axis=1)
+    low_pointer = np.zeros(batch_size, dtype=int)
+    high_pointer = np.zeros(batch_size, dtype=int)
+    rows = np.arange(batch_size)
+    tolerance = 1e-15
+
+    for _ in range(2 * support_size):
+        low = low_order[rows, low_pointer]
+        high = high_order[rows, high_pointer]
+        active = (
+            (remaining > tolerance)
+            & (values[rows, low] < values[rows, high] - tolerance)
+        )
+        if not np.any(active):
+            break
+
+        moved = np.minimum.reduce(
+            [1.0 - q[rows, low], q[rows, high], remaining]
+        )
+        moved = np.where(active, moved, 0.0)
+        q[rows, low] += moved
+        q[rows, high] -= moved
+        remaining -= moved
+
+        low_done = active & (1.0 - q[rows, low] <= tolerance)
+        high_done = active & (q[rows, high] <= tolerance)
+        low_pointer = np.minimum(
+            low_pointer + low_done.astype(int),
+            support_size - 1,
+        )
+        high_pointer = np.minimum(
+            high_pointer + high_done.astype(int),
+            support_size - 1,
+        )
+
+    return np.sum(q * values, axis=1)
+
+
 def vectorized_robust_bellman_backup(
     Q_locals,
     P_sources_arr,
     R_sources_arr,
+    feasible_support_mask,
     local_l1_radii,
     discount,
 ):
-    """
-    Vectorized robust Bellman backup for multiple noise trajectories.
-
-    Q_locals shape:
-        (B, K, S, A)
-
-    P_sources_arr shape:
-        (K, S, A, S)
-
-    R_sources_arr shape:
-        (K, S, A)
-
-    local_l1_radii shape:
-        (K, S, A)
-    """
-    V = np.max(Q_locals, axis=3)  # (B, K, S)
-
-    kappa = 0.5 * (
-        np.max(V, axis=2) - np.min(V, axis=2)
-    )  # (B, K)
-
-    expected_next = np.einsum(
-        "ksan,bkn->bksa",
-        P_sources_arr,
-        V,
+    """Exact support-restricted TV/L1 backup for noise trajectories."""
+    V = np.max(Q_locals, axis=3)
+    batch_size, num_sources, n_states = V.shape
+    n_actions = R_sources_arr.shape[2]
+    TQ = np.empty(
+        (batch_size, num_sources, n_states, n_actions),
+        dtype=float,
     )
 
-    TQ = (
-        R_sources_arr[None, :, :, :]
-        + discount * expected_next
-        - discount
-        * local_l1_radii[None, :, :, :]
-        * kappa[:, :, None, None]
-    )
+    for k in range(num_sources):
+        for s in range(n_states):
+            for a in range(n_actions):
+                support = np.flatnonzero(feasible_support_mask[k, s, a])
+                worst_future = exact_l1_worst_case_expectation_batch(
+                    nominal_probs=P_sources_arr[k, s, a, support],
+                    values=V[:, k, support],
+                    l1_radius=local_l1_radii[k, s, a],
+                )
+                TQ[:, k, s, a] = (
+                    R_sources_arr[k, s, a]
+                    + discount * worst_future
+                )
 
     return TQ
 
@@ -471,6 +543,7 @@ def run_selection_bias_trajectory(
     weights,
     P_sources_arr,
     R_sources_arr,
+    feasible_support_mask,
     local_l1_radii,
     noise_level,
     rng,
@@ -519,6 +592,7 @@ def run_selection_bias_trajectory(
             Q_locals=Q_locals,
             P_sources_arr=P_sources_arr,
             R_sources_arr=R_sources_arr,
+            feasible_support_mask=feasible_support_mask,
             local_l1_radii=local_l1_radii,
             discount=discount,
         )
@@ -662,6 +736,8 @@ def main():
     print("Bellman noise base seed:", BELLMAN_NOISE_BASE_SEED)
     print("Diagnostic noise level:", DIAGNOSTIC_NOISE_LEVEL)
     print("Number of noise trajectories:", NUM_NOISE_TRAJECTORIES)
+    print("Uncertainty distance:", UNCERTAINTY_DISTANCE)
+    print("Robust backup:", ROBUST_BACKUP_TYPE)
     print("Target oracle performance:", oracle_performance)
     print("Selection bias: E[Agg(Q_xi)] - Agg(E[Q_xi])")
 
@@ -689,12 +765,27 @@ def main():
                 seed=source_seed,
             )
 
-            P_sources_arr, R_sources_arr = convert_source_dicts_to_arrays(
+            pbar.write(
+                f"Run {run_id:02d} | "
+                f"eps={np.array2string(PERTURB_EPS_LIST, precision=3)} | "
+                f"empirical max L1 Gamma="
+                f"{np.array2string(empirical_gammas, precision=4)} | "
+                f"mean local L1 radius="
+                f"{np.array2string(mean_local_radii, precision=4)}"
+            )
+
+            (
+                P_sources_arr,
+                R_sources_arr,
+                feasible_support_mask,
+            ) = convert_source_dicts_to_arrays(
                 P_sources=P_sources,
                 n_states=n_states,
                 n_actions=n_actions,
             )
 
+            # Similarity weights use empirical max L1 Gamma. Since TV = L1 / 2,
+            # normalized inverse-distance weights are equivalent up to scaling.
             w_sim = similarity_weights(
                 empirical_gammas,
                 eps=SIMILARITY_EPS,
@@ -718,6 +809,7 @@ def main():
                     weights=weights,
                     P_sources_arr=P_sources_arr,
                     R_sources_arr=R_sources_arr,
+                    feasible_support_mask=feasible_support_mask,
                     local_l1_radii=local_l1_radii,
                     noise_level=DIAGNOSTIC_NOISE_LEVEL,
                     rng=rng,
@@ -744,6 +836,8 @@ def main():
                             "bellman_noise_base_seed": int(
                                 BELLMAN_NOISE_BASE_SEED
                             ),
+                            "uncertainty_distance": UNCERTAINTY_DISTANCE,
+                            "robust_backup_type": ROBUST_BACKUP_TYPE,
                         }
                     )
 
@@ -776,6 +870,8 @@ def main():
                         "num_noise_trajectories": int(NUM_NOISE_TRAJECTORIES),
                         "target_domain": "fixed",
                         "source_randomness": "perturbation_seed",
+                        "uncertainty_distance": UNCERTAINTY_DISTANCE,
+                        "robust_backup_type": ROBUST_BACKUP_TYPE,
                     }
                 )
 

@@ -25,6 +25,7 @@ METHOD_ORDER = [
     "Maximum-based",
     "Similarity-aware",
     "Uniform",
+    # "Non-robust DR",  # Temporarily disabled.
 ]
 
 PLOT_STYLES = {
@@ -38,6 +39,10 @@ PLOT_STYLES = {
     },
     "Uniform": {
         "color": "C1",
+        "linestyle": "-",
+    },
+    "Non-robust DR": {
+        "color": "C4",
         "linestyle": "-",
     },
 }
@@ -164,6 +169,12 @@ def main():
 
     ax.legend(loc="lower right")
 
+    # Match Garnet_exp1.py: show 100 as the highest integer tick and leave
+    # roughly 5% visual headroom above it.
+    ymin, _ = ax.get_ylim()
+    headroom = min(0.05 * max(100.0 - ymin, 1.0), 0.95)
+    ax.set_ylim(ymin, 100.0 + headroom)
+
     set_integer_yticks_keep_limits(ax)
 
     fig.tight_layout()
@@ -173,6 +184,7 @@ def main():
 
     fig.savefig(figure_pdf_path)
     fig.savefig(figure_png_path, dpi=300)
+    plt.close(fig)
 
     print("Garnet Experiment 1 figure regenerated from saved results.")
     print(f"Read results from: {result_path}")

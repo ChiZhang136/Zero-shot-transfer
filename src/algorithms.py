@@ -123,6 +123,7 @@ def run_periodic_learning(
     history = {
         "iterations": [],
         "target_performance": [],
+        "max_selection_counts": np.zeros(K, dtype=int),
     }
 
     for t in range(total_iterations):
@@ -152,6 +153,9 @@ def run_periodic_learning(
         # Synchronization
         # -----------------------------
         if (t + 1) % sync_period == 0:
+            if aggregation_type == "max":
+                selected = np.argmax(Q_locals, axis=0).ravel()
+                history["max_selection_counts"] += np.bincount(selected, minlength=K)
             Q_agg = aggregate_q_tables(
                 Q_locals,
                 weights=weights,

@@ -42,11 +42,14 @@ GOOD_SOURCE_EPS_LIST = np.array([0.010, 0.015, 0.020])
 
 # One bad source domain whose perturbation magnitude increases.
 BAD_SOURCE_EPS_LIST = np.array([
-    0.030,
-    0.035,
-    0.040,
-    0.045,
+    0.10,
+    0.20,
+    0.30,
+    0.40,
 ])
+
+UNCERTAINTY_DISTANCE = "support_restricted_tv_l1"
+ROBUST_BACKUP_TYPE = "exact_support_restricted_l1"
 
 # Multiple random source perturbation seeds under the same fixed target domain.
 NUM_RUNS = 10
@@ -358,49 +361,41 @@ def aggregate_q_tables(Q_tables, method, weights=None):
 # -----------------------------
 # Robust Bellman update
 # -----------------------------
+def exact_l1_worst_case_expectation(nominal_probs, values, l1_radius):
+    p = np.asarray(nominal_probs, dtype=float).copy()
+    v = np.asarray(values, dtype=float)
+    if p.size == 0: return 0.0
+    p = np.maximum(p, 0.0)
+    total = p.sum()
+    p = p / total if total > 1e-12 else np.ones_like(p) / p.size
+    q = p.copy()
+    budget = max(0.0, float(l1_radius)) / 2.0
+    order = np.argsort(v)
+    low, high = 0, len(order) - 1
+    while budget > 1e-12 and low < high:
+        i, j = order[low], order[high]
+        amount = min(budget, q[i], 1.0 - q[j])
+        if amount <= 1e-15:
+            if q[i] <= 1e-15: low += 1
+            if q[j] >= 1.0 - 1e-15: high -= 1
+            continue
+        q[i] -= amount; q[j] += amount; budget -= amount
+    return float(np.dot(q, v))
+
 def robust_bellman_update_gym(
-    Q,
-    P_source,
-    local_l1_radius,
-    n_states,
-    n_actions,
-    discount,
-    stepsize,
+    Q, P_source, local_l1_radius, n_states, n_actions, discount, stepsize
 ):
-    """
-    Robust Bellman update.
-
-        V(s) = max_a Q(s,a)
-        kappa(V) = (max_s V(s) - min_s V(s)) / 2
-
-        TQ(s,a)
-        =
-        sum_{s'} P_k(s'|s,a) [r + gamma V(s')]
-        - gamma * R_k(s,a) * kappa(V)
-
-    where
-
-        R_k(s,a) = ||P_k(.|s,a) - P_0(.|s,a)||_1.
-    """
+    """Exact support-restricted TV/L1 robust Bellman update."""
     V = np.max(Q, axis=1)
-    kappa = 0.5 * (np.max(V) - np.min(V))
-
     Q_backup = np.zeros_like(Q)
-
     for s in range(n_states):
         for a in range(n_actions):
-            q_value = 0.0
-
-            for p, s_next, reward, done in P_source[s][a]:
-                q_value += float(p) * (
-                    float(reward) + discount * V[int(s_next)]
-                )
-
-            penalty = discount * local_l1_radius[s, a] * kappa
-            q_value -= penalty
-
-            Q_backup[s, a] = q_value
-
+            transitions = P_source[s][a]
+            probs = np.array([float(t[0]) for t in transitions])
+            values = np.array([V[int(t[1])] for t in transitions])
+            reward = sum(float(t[0]) * float(t[2]) for t in transitions)
+            robust_future = exact_l1_worst_case_expectation(probs, values, local_l1_radius[s, a])
+            Q_backup[s, a] = reward + discount * robust_future
     return (1.0 - stepsize) * Q + stepsize * Q_backup
 
 
@@ -636,6 +631,8 @@ def main():
     print("Bad source base seed:", BAD_SOURCE_BASE_SEED)
     print("Target oracle performance:", oracle_performance)
     print("Synchronization period:", SYNC_PERIOD)
+    print("Uncertainty distance:", UNCERTAINTY_DISTANCE)
+    print("Robust backup:", ROBUST_BACKUP_TYPE)
 
     all_rows = []
     all_final_rows = []
