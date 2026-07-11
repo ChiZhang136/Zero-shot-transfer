@@ -143,6 +143,7 @@ def generate_sources_from_target(
 
     sources = []
     actual_source_gammas = []
+
     mixing_coefficients = []
 
     for gamma_k in source_gammas:

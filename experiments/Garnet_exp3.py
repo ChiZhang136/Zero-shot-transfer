@@ -235,7 +235,7 @@ def main():
     # Same heterogeneous source configuration as Experiment 1.
     # These source-level Gamma values are used to generate source domains
     # and compute similarity weights.
-    source_gammas = np.array([0.10, 0.20, 0.40, 0.80, 1.60])
+    source_gammas = np.array([0.10, 0.20, 0.30, 0.40])
     K = len(source_gammas)
 
     # Robust geometry:
@@ -267,7 +267,16 @@ def main():
         for method in METHOD_ORDER
     }
 
-    for seed in tqdm(range(num_seeds), desc="Garnet Experiment 3 seeds"):
+    progress = tqdm(
+        total=num_seeds * len(bias_levels) * len(METHOD_ORDER),
+        desc="Garnet Experiment 3",
+        unit="run",
+        dynamic_ncols=True,
+        mininterval=0.1,
+        file=sys.stdout,
+    )
+
+    for seed in range(num_seeds):
         # -----------------------------
         # Generate target and sources
         # -----------------------------
@@ -365,6 +374,14 @@ def main():
             max_norm = max_perf / oracle_perf
             final_perf_by_method["Maximum-based"][delta].append(max_norm)
 
+            progress.set_postfix(
+                seed=seed,
+                bias=delta,
+                method="Maximum-based",
+                refresh=False,
+            )
+            progress.update(1)
+
             all_rows.append(
                 {
                     "seed": seed,
@@ -405,6 +422,14 @@ def main():
             sim_norm = sim_perf / oracle_perf
             final_perf_by_method["Similarity-aware"][delta].append(sim_norm)
 
+            progress.set_postfix(
+                seed=seed,
+                bias=delta,
+                method="Similarity-aware",
+                refresh=False,
+            )
+            progress.update(1)
+
             all_rows.append(
                 {
                     "seed": seed,
@@ -442,6 +467,8 @@ def main():
                     "stepsize": float(stepsize),
                 }
             )
+
+    progress.close()
 
     # -----------------------------
     # Save raw results

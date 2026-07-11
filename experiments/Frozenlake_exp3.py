@@ -36,7 +36,8 @@ ITERATIONS = 500
 DISCOUNT = 0.99
 
 # Same heterogeneous source configuration as Frozenlake_exp1.
-PERTURB_EPS_LIST = np.array([0.010, 0.015, 0.020, 0.030])
+# PERTURB_EPS_LIST = np.array([0.10, 0.20, 0.30, 0.35])
+PERTURB_EPS_LIST = np.array([0.01, 0.015, 0.020, 0.030])
 
 # Multiple random source perturbation seeds under the same fixed target domain.
 NUM_RUNS = 10
@@ -51,6 +52,9 @@ SYNC_PERIOD = 5
 
 SIMILARITY_POWER = 1.0
 SIMILARITY_EPS = 1e-6
+
+UNCERTAINTY_DISTANCE = "support_restricted_tv_l1"
+ROBUST_BACKUP_TYPE = "exact_support_restricted_l1"
 
 # Progress bar update frequency.
 PROGRESS_UPDATE_EVERY = 10
@@ -180,9 +184,8 @@ def perturb_kernel(P_base, epsilon, n_states, n_actions, rng):
 
         R(s,a) = ||P_perturbed(.|s,a) - P_base(.|s,a)||_1.
 
-    This matches the penalty form:
-
-        R(s,a) * span(V) / 2.
+    This radius defines a support-restricted L1 probability ball, equivalent
+    to a total-variation ball with radius R(s,a) / 2.
     """
     P_perturbed = copy.deepcopy(P_base)
     local_l1_radii = np.zeros((n_states, n_actions), dtype=float)
@@ -305,6 +308,53 @@ def aggregate_q_tables(Q_tables, method, weights=None):
 # -----------------------------
 # Robust Bellman backup
 # -----------------------------
+def exact_l1_worst_case_expectation(nominal_probs, values, l1_radius):
+    """Minimize q^T values over a support-restricted L1 probability ball."""
+    nominal_probs = np.asarray(nominal_probs, dtype=float)
+    values = np.asarray(values, dtype=float)
+
+    if nominal_probs.ndim != 1 or values.shape != nominal_probs.shape:
+        raise ValueError("nominal_probs and values must be matching 1D arrays.")
+    if len(nominal_probs) == 0:
+        raise ValueError("At least one feasible successor is required.")
+
+    total_probability = float(np.sum(nominal_probs))
+    if total_probability <= 0.0:
+        raise ValueError("nominal_probs must have positive total mass.")
+
+    q = nominal_probs / total_probability
+    remaining_mass = min(max(float(l1_radius), 0.0) / 2.0, 1.0)
+    low_order = np.argsort(values)
+    high_order = np.argsort(-values)
+    low_pointer = 0
+    high_pointer = 0
+    tolerance = 1e-15
+
+    while remaining_mass > tolerance:
+        low = int(low_order[low_pointer])
+        high = int(high_order[high_pointer])
+
+        if values[low] >= values[high] - tolerance:
+            break
+
+        moved_mass = min(1.0 - q[low], q[high], remaining_mass)
+
+        if moved_mass > tolerance:
+            q[low] += moved_mass
+            q[high] -= moved_mass
+            remaining_mass -= moved_mass
+
+        if 1.0 - q[low] <= tolerance:
+            low_pointer += 1
+        if q[high] <= tolerance:
+            high_pointer += 1
+
+        if low_pointer >= len(q) or high_pointer >= len(q):
+            break
+
+    return float(np.dot(q, values))
+
+
 def robust_bellman_backup_gym(
     Q,
     P_source,
@@ -313,34 +363,38 @@ def robust_bellman_backup_gym(
     n_actions,
     discount,
 ):
-    """
-    Exact robust Bellman backup:
-
-        TQ(s,a)
-        =
-        sum_{s'} P_k(s'|s,a) [r + gamma max_a' Q(s',a')]
-        - gamma * R_k(s,a) * kappa(V).
-
-    The model-free-style noise is added outside this function.
-    """
+    """Exact support-restricted TV/L1 robust Bellman backup."""
     V = np.max(Q, axis=1)
-    kappa = 0.5 * (np.max(V) - np.min(V))
-
     TQ = np.zeros_like(Q)
 
     for s in range(n_states):
         for a in range(n_actions):
-            q_value = 0.0
+            probability_by_state = {}
+            expected_reward = 0.0
 
             for p, s_next, reward, done in P_source[s][a]:
-                q_value += float(p) * (
-                    float(reward) + discount * V[int(s_next)]
+                s_next = int(s_next)
+                probability_by_state[s_next] = (
+                    probability_by_state.get(s_next, 0.0) + float(p)
                 )
+                expected_reward += float(p) * float(reward)
 
-            penalty = discount * local_l1_radius[s, a] * kappa
-            q_value -= penalty
+            successor_states = np.fromiter(
+                probability_by_state.keys(),
+                dtype=int,
+            )
+            nominal_probs = np.fromiter(
+                probability_by_state.values(),
+                dtype=float,
+            )
 
-            TQ[s, a] = q_value
+            worst_future_value = exact_l1_worst_case_expectation(
+                nominal_probs=nominal_probs,
+                values=V[successor_states],
+                l1_radius=local_l1_radius[s, a],
+            )
+
+            TQ[s, a] = expected_reward + discount * worst_future_value
 
     return TQ
 
@@ -555,6 +609,8 @@ def main():
     print("Synchronization period:", SYNC_PERIOD)
     print("Stepsize:", STEPSIZE)
     print("Noise location: Bellman backup only")
+    print("Uncertainty distance:", UNCERTAINTY_DISTANCE)
+    print("Robust backup:", ROBUST_BACKUP_TYPE)
 
     all_rows = []
 
@@ -589,6 +645,15 @@ def main():
                 n_states=n_states,
                 n_actions=n_actions,
                 seed=source_seed,
+            )
+
+            pbar.write(
+                f"Run {run_id:02d} | "
+                f"eps={np.array2string(PERTURB_EPS_LIST, precision=3)} | "
+                f"empirical max L1 Gamma="
+                f"{np.array2string(empirical_gammas, precision=4)} | "
+                f"mean local L1 radius="
+                f"{np.array2string(mean_local_radii, precision=4)}"
             )
 
             w_sim = similarity_weights(
@@ -687,6 +752,8 @@ def main():
                             "target_domain": "fixed",
                             "source_randomness": "perturbation_seed",
                             "noise_location": "bellman_backup_only",
+                            "uncertainty_distance": UNCERTAINTY_DISTANCE,
+                            "robust_backup_type": ROBUST_BACKUP_TYPE,
                         }
                     )
 
@@ -722,6 +789,8 @@ def main():
                         "target_domain": "fixed",
                         "source_randomness": "perturbation_seed",
                         "noise_location": "bellman_backup_only",
+                        "uncertainty_distance": UNCERTAINTY_DISTANCE,
+                        "robust_backup_type": ROBUST_BACKUP_TYPE,
                     }
                 )
 

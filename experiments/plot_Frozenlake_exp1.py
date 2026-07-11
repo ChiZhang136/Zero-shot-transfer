@@ -32,10 +32,15 @@ LINE_WIDTH = 2.0
 SHADE_ALPHA = 0.15
 GRID_ALPHA = 0.25
 
+EXPECTED_EPS = np.array([0.10, 0.20, 0.30, 0.35])
+EXPECTED_UNCERTAINTY_DISTANCE = "support_restricted_tv_l1"
+EXPECTED_ROBUST_BACKUP_TYPE = "exact_support_restricted_l1"
+
 METHOD_ORDER = [
     "Maximum-based",
     "Similarity-aware",
     "Uniform",
+    # "Non-robust DR",  # Temporarily disabled.
 ]
 
 PLOT_STYLES = {
@@ -86,11 +91,31 @@ def main():
         "iteration",
         "method",
         "normalized_performance",
+        "uncertainty_distance",
+        "robust_backup_type",
     }
 
     missing_cols = required_cols - set(df.columns)
     if missing_cols:
         raise ValueError(f"Missing required columns: {missing_cols}")
+
+    uncertainty_types = set(df["uncertainty_distance"].dropna().unique())
+    backup_types = set(df["robust_backup_type"].dropna().unique())
+    metadata_eps = np.sort(
+        df.loc[df["method"] == "source_metadata", "perturb_epsilon"]
+        .dropna()
+        .unique()
+        .astype(float)
+    )
+
+    if uncertainty_types != {EXPECTED_UNCERTAINTY_DISTANCE}:
+        raise ValueError(f"Unexpected uncertainty distance: {uncertainty_types}")
+    if backup_types != {EXPECTED_ROBUST_BACKUP_TYPE}:
+        raise ValueError(f"Unexpected robust backup: {backup_types}")
+    if not np.allclose(metadata_eps, EXPECTED_EPS):
+        raise ValueError(
+            f"Unexpected perturb eps: {metadata_eps}; expected {EXPECTED_EPS}."
+        )
 
     # Keep only performance rows.
     perf = df[df["method"].isin(METHOD_ORDER)].copy()

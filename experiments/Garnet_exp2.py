@@ -250,7 +250,7 @@ def main():
     good_source_gammas = np.array([0.10, 0.20, 0.30])
 
     # One bad source domain whose distance increases.
-    bad_source_gammas = np.array([0.90, 1.20, 1.50, 1.80])
+    bad_source_gammas = np.array([0.40, 0.50, 0.60, 0.70])
 
     total_iterations = 500
     eval_every = 5
@@ -272,7 +272,16 @@ def main():
     sim_by_bad_gamma = {float(g): [] for g in bad_source_gammas}
     uni_by_bad_gamma = {float(g): [] for g in bad_source_gammas}
 
-    for seed in tqdm(range(num_seeds), desc="Garnet Experiment 2 seeds"):
+    progress = tqdm(
+        total=num_seeds * len(bad_source_gammas) * 2,
+        desc="Garnet Experiment 2",
+        unit="run",
+        dynamic_ncols=True,
+        mininterval=0.1,
+        file=sys.stdout,
+    )
+
+    for seed in range(num_seeds):
         # -----------------------------
         # Generate target Garnet MDP
         # -----------------------------
@@ -401,6 +410,14 @@ def main():
             )
             uni_norm = uni_perf / oracle_perf
 
+            progress.set_postfix(
+                seed=seed,
+                bad_gamma=bad_gamma,
+                method="Uniform",
+                refresh=False,
+            )
+            progress.update(1)
+
             # -----------------------------
             # Similarity-aware aggregation
             # -----------------------------
@@ -429,6 +446,14 @@ def main():
                 discount=discount,
             )
             sim_norm = sim_perf / oracle_perf
+
+            progress.set_postfix(
+                seed=seed,
+                bad_gamma=bad_gamma,
+                method="Similarity-aware",
+                refresh=False,
+            )
+            progress.update(1)
 
             sim_by_bad_gamma[bad_gamma].append(sim_norm)
             uni_by_bad_gamma[bad_gamma].append(uni_norm)
@@ -506,6 +531,8 @@ def main():
                         "stepsize": float(stepsize),
                     }
                 )
+
+    progress.close()
 
     # -----------------------------
     # Save raw results
