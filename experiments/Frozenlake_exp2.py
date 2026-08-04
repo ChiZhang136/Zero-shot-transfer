@@ -362,25 +362,33 @@ def aggregate_q_tables(Q_tables, method, weights=None):
 # Robust Bellman update
 # -----------------------------
 def exact_l1_worst_case_expectation(nominal_probs, values, l1_radius):
-    p = np.asarray(nominal_probs, dtype=float).copy()
-    v = np.asarray(values, dtype=float)
-    if p.size == 0: return 0.0
-    p = np.maximum(p, 0.0)
-    total = p.sum()
-    p = p / total if total > 1e-12 else np.ones_like(p) / p.size
-    q = p.copy()
-    budget = max(0.0, float(l1_radius)) / 2.0
-    order = np.argsort(v)
-    low, high = 0, len(order) - 1
-    while budget > 1e-12 and low < high:
-        i, j = order[low], order[high]
-        amount = min(budget, q[i], 1.0 - q[j])
-        if amount <= 1e-15:
-            if q[i] <= 1e-15: low += 1
-            if q[j] >= 1.0 - 1e-15: high -= 1
-            continue
-        q[i] -= amount; q[j] += amount; budget -= amount
-    return float(np.dot(q, v))
+    """Minimize q^T values over a support-restricted L1 probability ball."""
+    nominal_probs = np.asarray(nominal_probs, dtype=float)
+    values = np.asarray(values, dtype=float)
+    if nominal_probs.ndim != 1 or values.shape != nominal_probs.shape:
+        raise ValueError("nominal_probs and values must be matching 1D arrays.")
+    if len(nominal_probs) == 0:
+        raise ValueError("At least one feasible successor is required.")
+    total_probability = float(np.sum(nominal_probs))
+    if total_probability <= 0.0:
+        raise ValueError("nominal_probs must have positive total mass.")
+    q = nominal_probs / total_probability
+    remaining_mass = min(max(float(l1_radius), 0.0) / 2.0, 1.0)
+    low_order = np.argsort(values)
+    high_order = np.argsort(-values)
+    low_pointer = high_pointer = 0
+    tolerance = 1e-15
+    while remaining_mass > tolerance:
+        low = int(low_order[low_pointer]); high = int(high_order[high_pointer])
+        if values[low] >= values[high] - tolerance:
+            break
+        moved_mass = min(1.0 - q[low], q[high], remaining_mass)
+        if moved_mass > tolerance:
+            q[low] += moved_mass; q[high] -= moved_mass; remaining_mass -= moved_mass
+        if 1.0 - q[low] <= tolerance: low_pointer += 1
+        if q[high] <= tolerance: high_pointer += 1
+        if low_pointer >= len(q) or high_pointer >= len(q): break
+    return float(np.dot(q, values))
 
 def robust_bellman_update_gym(
     Q, P_source, local_l1_radius, n_states, n_actions, discount, stepsize
