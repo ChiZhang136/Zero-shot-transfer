@@ -170,7 +170,7 @@ def main():
             color=style["color"],
             linestyle=style["linestyle"],
             linewidth=LINE_WIDTH,
-            label=method_name,
+            label=("Domain randomization" if method_name == "Non-robust DR" else method_name),
         )
 
         ax.fill_between(
