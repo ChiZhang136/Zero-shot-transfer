@@ -34,10 +34,10 @@ EXPECTED_UNCERTAINTY_DISTANCES = {"support_restricted_tv_l1", "none"}
 EXPECTED_ROBUST_BACKUP_TYPES = {"exact_support_restricted_l1", "nominal_mixture_bellman"}
 
 METHOD_ORDER = [
+    "Non-robust DR",
     "Maximum-based",
     "Similarity-aware",
     "Uniform",
-    "Non-robust DR",
 ]
 
 PLOT_STYLES = {

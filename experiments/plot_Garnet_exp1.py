@@ -22,10 +22,10 @@ SHADE_ALPHA = 0.15
 GRID_ALPHA = 0.25
 
 METHOD_ORDER = [
+    "Non-robust DR",
     "Maximum-based",
     "Similarity-aware",
     "Uniform",
-    "Non-robust DR",
 ]
 
 PLOT_STYLES = {
